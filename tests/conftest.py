@@ -212,6 +212,7 @@ def poller(sender_client, session_factory):
         poll_sec=None,
         heartbeat_sec=None,
         register_refresh_sec=60.0,
+        replay_backlog_on_start=True,   # tests drive cycle() expecting immediate processing
     )
     return Poller(sender_client, session_factory, settings)
 
@@ -226,5 +227,6 @@ def bad_poller(bad_key_client, session_factory):
         poll_sec=None,
         heartbeat_sec=None,
         register_refresh_sec=60.0,
+        replay_backlog_on_start=True,   # tests drive cycle() expecting immediate processing
     )
     return Poller(bad_key_client, session_factory, settings)

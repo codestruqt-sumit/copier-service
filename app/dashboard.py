@@ -221,6 +221,40 @@ def activity(request: Request, since: int = 0, limit: int = 300) -> dict:
     }
 
 
+@router.post("/api/queue/flush")
+def queue_flush(request: Request) -> dict:
+    """Operator control: CANCEL all queued actions and DEFER the cursor to the Sender's
+    current latest - so the copier drops everything already sent and acts only on NEWER
+    signals from now on. Use to recover from a bad backlog or hard-reset reception."""
+    from sqlalchemy import update
+
+    from app.processor import log_event
+
+    poller = getattr(request.app.state, "poller", None)
+    db = request.app.state.session_factory()
+    try:
+        res = db.execute(
+            update(Action).where(Action.status == "queued").values(
+                status="cancelled", note="cleared by operator flush")
+        )
+        cancelled = res.rowcount or 0
+        latest = None
+        if poller is not None:
+            latest, _ = poller.skip_to_latest(db)
+        log_event(db, "warn", "executor",
+                  f"Operator FLUSH: cancelled {cancelled} queued action(s); cursor deferred "
+                  f"to {latest} - only newer signals from now.")
+        db.commit()
+        return {"ok": True, "cancelled": cancelled, "cursor": latest,
+                "detail": f"cleared {cancelled} queued action(s); now listening from the "
+                          f"latest signal only."}
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+    finally:
+        db.close()
+
+
 @router.get("/api/actions")
 def actions(request: Request, offset: int = 0, limit: int = 10) -> dict:
     """Paged action history, latest first - the dashboard shows 10 at a time so the

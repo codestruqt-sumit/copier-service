@@ -120,6 +120,7 @@
       <button class="btn secondary" id="selftest_btn">Test tab access</button>
       <button class="btn secondary" id="recycle_btn">Recycle driver</button>
       <button class="btn secondary" id="restart_btn">Restart browser</button>
+      <button class="btn secondary" id="flush_btn">Clear queue &amp; skip to now</button>
       <span id="term_state" class="pill warn">checking…</span>
     </div>
     <div class="small" id="term_exec" style="margin-top:11px"></div>
@@ -395,6 +396,9 @@
   maintBtn('restart_btn', '/api/terminal/restart',
            'Restart the Tradovate browser? It closes and relaunches — your login persists via the profile.',
            'requesting browser restart…');
+  maintBtn('flush_btn', '/api/queue/flush',
+           'Clear ALL queued actions and skip to only-new signals?\n\nQueued orders will NOT be placed. The copier will ignore everything already sent and act only on signals from now on.',
+           'clearing queue + deferring cursor to now…');
 
   tick();
   setInterval(tick, 2000);

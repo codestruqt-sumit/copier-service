@@ -232,3 +232,26 @@ def test_cursor_survives_restart(poller, fake_sender, session_factory, sender_cl
         assert _count(db, SignalSeen) == 1  # nothing re-delivered
     finally:
         db.close()
+
+
+def test_fresh_copier_skips_backlog_and_listens_from_now(poller, fake_sender, session_factory):
+    """A fresh copier (no cursor) must NOT replay history - it learns the current cursor
+    and acts only on signals sent AFTER it started (the anti-backlog-replay guard)."""
+    poller.settings.replay_backlog_on_start = False
+    fake_sender.publish(symbol="ESU6", side="buy")     # backlog - already happened
+    fake_sender.publish(symbol="NQU6", side="sell")
+    poller.cycle()
+    db = session_factory()
+    try:
+        assert _count(db, SignalSeen) == 0             # backlog SKIPPED, not replayed
+        assert kv_get(db, CURSOR_KEY) is not None       # cursor advanced to "now"
+    finally:
+        db.close()
+
+    fake_sender.publish(symbol="MNQU6", side="buy")     # a NEW signal, sent after start
+    poller.cycle()
+    db = session_factory()
+    try:
+        assert [s.symbol for s in db.scalars(select(SignalSeen))] == ["MNQU6"]
+    finally:
+        db.close()

@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     poll_sec: float | None = None
     heartbeat_sec: float | None = None
     register_refresh_sec: float = 60.0
+    # A FRESH copier (empty local DB, no cursor) starts listening from NOW and SKIPS the
+    # historical backlog - those signals already happened; replaying them would fire a
+    # burst of stale orders. Set true only to deliberately replay history on a new copier.
+    replay_backlog_on_start: bool = False
 
     # --- Part 3: terminal execution -------------------------------------------
     # The executor is OFF unless explicitly armed; reception/queueing always runs.

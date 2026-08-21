@@ -201,3 +201,26 @@ def test_healthz_reports_dead_poller(session_factory, poller):
     response = client.get("/healthz")
     assert response.status_code == 503
     assert "poller dead" in response.text
+
+
+def test_queue_flush_cancels_queued_and_defers_cursor(session_factory, poller, fake_sender):
+    """The 'Clear queue & skip to now' control: cancel every queued action and advance
+    the cursor to the Sender's latest, so only newer signals are acted on."""
+    from sqlalchemy import select
+
+    from app.models import Action
+    from app.poller import CURSOR_KEY, kv_get
+
+    fake_sender.publish()          # -> 2 queued actions after the cycle
+    poller.cycle()
+    client = make_app(session_factory, poller)
+
+    res = client.post("/api/queue/flush").json()
+    assert res["ok"] is True and res["cancelled"] == 2 and res["cursor"] is not None
+
+    db = session_factory()
+    try:
+        assert {a.status for a in db.scalars(select(Action))} == {"cancelled"}
+        assert kv_get(db, CURSOR_KEY) is not None
+    finally:
+        db.close()

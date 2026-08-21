@@ -148,6 +148,17 @@ class Poller(threading.Thread):
     def stop(self) -> None:
         self.stop_event.set()
 
+    def skip_to_latest(self, db: Session) -> tuple[str | None, int]:
+        """Fetch the Sender's current latest cursor and store it WITHOUT processing the
+        commands, so only signals AFTER now are acted on. Returns (cursor, skipped_count).
+        Used on a fresh start and by the dashboard's 'Clear queue & skip to now' control."""
+        payload = self.client.commands(None)
+        latest = payload.get("cursor")
+        skipped = len(payload.get("commands") or [])
+        if latest:
+            kv_set(db, CURSOR_KEY, str(latest))
+        return latest, skipped
+
     def cycle(self) -> None:
         """One reception pass. Never raises."""
         db = None
@@ -161,6 +172,19 @@ class Poller(threading.Thread):
                 log.warning("heartbeat failed (still polling): %s", exc)
 
             cursor = kv_get(db, CURSOR_KEY)
+            if cursor is None and not getattr(self.settings, "replay_backlog_on_start", False):
+                # FRESH copier: start listening from NOW. Learn the current cursor and
+                # DISCARD the historical backlog (those signals already happened) instead
+                # of replaying it as live orders.
+                latest, skipped = self.skip_to_latest(db)
+                if latest:
+                    cursor = latest
+                    db.commit()
+                    log_event(db, "info", "sender",
+                              f"Fresh start: skipped {skipped} historical signal(s); "
+                              f"listening from now.")
+                    db.commit()
+
             payload = self.client.commands(cursor)
             commands = payload.get("commands") or []
             next_cursor = payload.get("cursor")
