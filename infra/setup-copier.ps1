@@ -92,6 +92,12 @@ EXECUTOR_ENABLED=true
 DATA_DIR=./data
 POLL_SEC=1
 
+# local dashboard bind. 0.0.0.0 = all interfaces (still only reachable ON the VM unless you
+# open port 8100 in the NSG - which you should NOT: the dashboard drives the terminal).
+# Set 127.0.0.1 to hard-restrict the dashboard to the VM itself.
+DASHBOARD_HOST=0.0.0.0
+DASHBOARD_PORT=8100
+
 # maintenance: recycle the driver (keeps login), never full browser restart
 BROWSER_RESTART_SEC=0
 DRIVER_RECYCLE_SEC=1800
@@ -114,8 +120,9 @@ LOGIN_ALERT_REPEAT_SEC=300
 
 # 5) run helper --------------------------------------------------------------------
 $runText = @'
-# Starts the copier dashboard + reception/executor. Open http://127.0.0.1:8100
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100
+# Starts the copier dashboard + reception/executor (honors DASHBOARD_HOST/PORT from .env).
+# On the VM, open http://127.0.0.1:8100
+.\.venv\Scripts\python.exe -m app.main
 '@
 Set-Content -Path '.\run-copier.ps1' -Value $runText -Encoding ascii
 

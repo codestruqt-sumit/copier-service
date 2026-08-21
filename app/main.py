@@ -79,3 +79,12 @@ def create_app(*, start_poller: bool = True, http_client=None) -> FastAPI:
 
 
 app = create_app()
+
+
+if __name__ == "__main__":
+    # Native launch (the VM path): `python -m app.main` honors DASHBOARD_HOST/DASHBOARD_PORT
+    # from .env. (The Docker image launches uvicorn via its CMD instead.)
+    import uvicorn
+
+    uvicorn.run(app, host=settings.dashboard_host, port=settings.dashboard_port,
+                log_level=settings.log_level.lower())
