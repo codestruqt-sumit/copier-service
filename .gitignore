@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+data/
+.env
+.pytest_cache/
+logs/
+state/
+browser-profile/
+settings.local.json
+data-e2e*/
+e2e-run/
+data-p3/
+
+# ATS run reports (generated artifacts)
+ats-report-*.json

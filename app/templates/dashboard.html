@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Copier</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🛰️</text></svg>">
+<style>
+  :root {
+    --bg:#0e1116; --surface:#161a21; --surface-2:#1e232c; --border:#2a303a;
+    --text:#e4e7eb; --muted:#8b939f; --accent:#5b8cff; --accent-soft:#17223d;
+    --ok:#3ecf8e; --ok-soft:#10281d; --bad:#ff6b6b; --bad-soft:#2c1618;
+    --warn:#e2a33c; --warn-soft:#2b2214; --order:#a78bfa; --order-soft:#221b3d;
+    --mono:ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{color-scheme:dark}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,'Segoe UI',Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  header{display:flex;align-items:center;gap:14px;padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+  .brand{font-weight:700;font-size:16px}
+  .pill{font-size:12px;font-weight:600;padding:3px 12px;border-radius:999px;border:1px solid;letter-spacing:.4px}
+  .pill.ok{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
+  .pill.bad{color:var(--bad);border-color:var(--bad);background:var(--bad-soft)}
+  .pill.warn{color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+  .muted{color:var(--muted)} .small{font-size:12px}
+  .spacer{margin-left:auto}
+  main{max-width:1500px;margin:0 auto;padding:18px 20px 60px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:11px 14px}
+  .tile .k{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+  .tile .v{font-size:21px;font-weight:600;font-family:var(--mono);line-height:1.3;word-break:break-all}
+  .tile .v.sm{font-size:14px}
+  .grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:14px;align-items:start}
+  @media(max-width:1100px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px;min-width:0}
+  .card h2{font-size:13px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600}
+  .twrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);padding:5px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+  td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .num{font-family:var(--mono);text-align:right;white-space:nowrap}
+  .mono{font-family:var(--mono)}
+  .chip{display:inline-block;font-size:11px;font-weight:600;padding:1px 8px;border-radius:999px;border:1px solid;white-space:nowrap}
+  .chip.queued{color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+  .chip.done,.chip.online,.chip.published{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
+  .chip.cancelled,.chip.failed,.chip.error{color:var(--bad);border-color:var(--bad);background:var(--bad-soft)}
+  .chip.superseded,.chip.skipped,.chip.offline,.chip.expired{color:var(--muted);border-color:var(--border);background:var(--surface-2)}
+  .chip.updated,.chip.executing{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+  .chip.buy{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
+  .chip.sell{color:var(--bad);border-color:var(--bad);background:var(--bad-soft)}
+  .chip.kind{color:var(--order);border-color:var(--order);background:var(--order-soft)}
+  .log{font-size:12.5px;max-height:520px;overflow-y:auto}
+  .log .row{display:flex;gap:10px;padding:4px 0;border-bottom:1px solid var(--border)}
+  .log .row:last-child{border-bottom:none}
+  .log .ts{color:var(--muted);font-family:var(--mono);white-space:nowrap}
+  .log .lvl{width:44px;flex:none;font-weight:700;font-size:10.5px;text-transform:uppercase;padding-top:2px}
+  .log .lvl.info{color:var(--accent)} .log .lvl.warn{color:var(--warn)} .log .lvl.error{color:var(--bad)}
+  .empty{color:var(--muted);text-align:center;padding:18px}
+  .acct{display:inline-flex;flex-direction:column;gap:1px;border:1px solid var(--border);border-radius:9px;padding:7px 12px;background:var(--surface-2);margin:0 8px 8px 0}
+  .acct .a{font-family:var(--mono);font-weight:700}
+  .acct .g{font-size:11px;color:var(--muted)}
+  .btn{font:inherit;font-weight:600;font-size:13px;padding:8px 18px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#0b1220;cursor:pointer;white-space:nowrap}
+  .btn:hover{filter:brightness(1.08)}
+  .btn:disabled{opacity:.55;cursor:default;filter:none}
+  .btn.secondary{background:transparent;color:var(--accent)}
+  .btn.secondary:hover{background:var(--accent-soft)}
+  .row-ctl{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .pager{float:right;display:inline-flex;align-items:center;gap:8px;font-weight:400;text-transform:none;letter-spacing:0}
+  .pg{font:inherit;font-size:12px;padding:2px 11px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);cursor:pointer}
+  .pg:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+  .pg:disabled{opacity:.4;cursor:default}
+  /* Prominent, hard-to-miss banner shown ONLY when the operator must act (log in / open
+     the terminal). Sits directly under the header; scrolls with the page. */
+  #login_banner{display:none;align-items:center;gap:14px;padding:15px 20px;background:var(--bad-soft);border-bottom:2px solid var(--bad)}
+  #login_banner.show{display:flex}
+  #login_banner .lb-ico{font-size:24px;line-height:1}
+  #login_banner .lb-txt{font-weight:700;font-size:15px;color:var(--bad);letter-spacing:.3px}
+  #login_banner .lb-sub{font-weight:500;font-size:13px;color:var(--text);margin-top:2px}
+  #login_banner .btn{margin-left:auto}
+  @keyframes lbpulse{0%,100%{opacity:1}50%{opacity:.72}}
+  @media(prefers-reduced-motion:no-preference){#login_banner.show .lb-ico{animation:lbpulse 1.6s ease-in-out infinite}}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">🛰️ Copier · <span id="name" class="mono">—</span></span>
+  <span id="status" class="pill warn">starting…</span>
+  <span id="exec_status" class="pill warn">EXECUTOR —</span>
+  <span class="muted small">sender: <span id="sender" class="mono">—</span></span>
+  <span class="spacer"></span>
+  <span class="muted small">last poll <span id="lastpoll">—</span> · refreshed <span id="refreshed">—</span></span>
+</header>
+
+<div id="login_banner">
+  <span class="lb-ico">🔐</span>
+  <div>
+    <div class="lb-txt" id="lb_txt">Log in needed</div>
+    <div class="lb-sub" id="lb_sub"></div>
+  </div>
+  <button class="btn" id="lb_start">Open terminal</button>
+</div>
+
+<main>
+  <div class="tiles">
+    <div class="tile"><span class="k">Queue depth</span><span class="v" id="t_queue">—</span></div>
+    <div class="tile"><span class="k">Signals received</span><span class="v" id="t_signals">—</span></div>
+    <div class="tile"><span class="k">Actions total</span><span class="v" id="t_actions">—</span></div>
+    <div class="tile"><span class="k">Errors</span><span class="v" id="t_errors">—</span></div>
+    <div class="tile"><span class="k">Poll every</span><span class="v" id="t_poll">—</span></div>
+    <div class="tile"><span class="k">Executor</span><span class="v sm" id="t_exec">—</span></div>
+    <div class="tile"><span class="k">Terminal account</span><span class="v sm mono" id="t_term_acct">—</span></div>
+    <div class="tile"><span class="k">Cursor</span><span class="v sm mono" id="t_cursor">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Tradovate terminal</h2>
+    <div class="row-ctl">
+      <button class="btn" id="launch_btn">Start Tradovate terminal</button>
+      <button class="btn secondary" id="selftest_btn">Test tab access</button>
+      <button class="btn secondary" id="recycle_btn">Recycle driver</button>
+      <button class="btn secondary" id="restart_btn">Restart browser</button>
+      <span id="term_state" class="pill warn">checking…</span>
+    </div>
+    <div class="small" id="term_exec" style="margin-top:11px"></div>
+    <div class="muted small" id="term_hint" style="margin-top:7px">This opens a browser tab at Tradovate — log in there by hand. The copier never sees your credentials; it only attaches to the tab and drives it.</div>
+    <div class="muted small" id="launch_msg" style="margin-top:7px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Accounts owned by this copier</h2>
+    <div id="accounts"><p class="empty">not registered yet</p></div>
+  </div>
+
+  <div class="card">
+    <h2>Terminal <span class="muted">(active-account snapshot from the executor)</span></h2>
+    <div id="terminal"><p class="empty">no snapshot yet — executor disabled or not monitoring</p></div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>Action queue <span class="muted">(latest first)</span>
+          <span class="pager">
+            <button class="pg" id="a_prev" disabled>‹ Newer</button>
+            <span class="muted small" id="a_range">—</span>
+            <button class="pg" id="a_next">Older ›</button>
+          </span>
+        </h2>
+        <div class="twrap"><table>
+          <thead><tr><th>#</th><th>When</th><th>Account</th><th>Action</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th>Signal</th><th>Status</th><th>Ref · note</th></tr></thead>
+          <tbody id="queue"><tr><td colspan="11" class="empty">nothing yet</td></tr></tbody>
+        </table></div>
+      </div>
+
+      <div class="card">
+        <h2>Signals received</h2>
+        <div class="twrap"><table>
+          <thead><tr><th>Signal</th><th>When</th><th>Symbol</th><th>Kind</th><th>Side</th><th class="num">Base qty</th><th class="num">Price</th><th>Groups</th><th>Status</th></tr></thead>
+          <tbody id="signals"><tr><td colspan="9" class="empty">nothing yet</td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Activity log</h2>
+      <div class="log" id="events"><p class="empty">nothing yet</p></div>
+    </div>
+  </div>
+</main>
+
+<script>
+(function(){
+  var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});};
+  function ago(iso){ if(!iso) return '—'; var s=(Date.now()-new Date(iso).getTime())/1000;
+    if(s<5) return 'just now'; if(s<60) return Math.floor(s)+'s ago';
+    if(s<3600) return Math.floor(s/60)+'m ago'; if(s<86400) return Math.floor(s/3600)+'h ago';
+    return new Date(iso).toLocaleString(); }
+  function clock(iso){ if(!iso) return '—'; var d=new Date(iso);
+    return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+':'+('0'+d.getSeconds()).slice(-2); }
+  function chip(text,cls){ return '<span class="chip '+esc(cls||text)+'">'+esc(text)+'</span>'; }
+  function price(a){ if(a.limit_price&&a.stop_price) return esc(a.stop_price)+' / '+esc(a.limit_price);
+    return esc(a.limit_price||a.stop_price||''); }
+  function actionRowHtml(a){
+    var refnote=(a.order_ref?('#'+esc(a.order_ref)+' '):'')+(a.note?esc(a.note):'');
+    return '<tr><td class="num muted">'+a.id+'</td><td class="muted">'+esc(ago(a.created_at))+'</td>'+
+      '<td class="mono">'+esc(a.account)+'</td><td>'+chip(a.kind,'kind')+'</td>'+
+      '<td class="mono">'+esc(a.symbol)+'</td><td>'+(a.side?chip(a.side,a.side):'')+'</td>'+
+      '<td class="num">'+(a.qty==null?'':a.qty)+'</td><td class="num">'+price(a)+'</td>'+
+      '<td class="muted">#'+a.signal_id+' r'+a.revision+'</td><td>'+chip(a.status)+'</td>'+
+      '<td class="muted small" style="max-width:260px">'+refnote+'</td></tr>';
+  }
+
+  function render(d){
+    document.getElementById('name').textContent=d.copier_name||'—';
+    document.getElementById('sender').textContent=d.sender_base_url||'—';
+    var h=d.health||{};
+    var st=document.getElementById('status');
+    if(h.last_poll_ok===true){ st.className='pill ok'; st.textContent='ONLINE'; }
+    else if(h.last_poll_ok===false){ st.className='pill bad'; st.textContent='SENDER UNREACHABLE ('+(h.consecutive_errors||0)+')'; }
+    else { st.className='pill warn'; st.textContent='STARTING…'; }
+
+    var ex=d.executor||{};
+    var ep=document.getElementById('exec_status');
+    if(!ex.enabled){ ep.className='pill warn'; ep.textContent='EXECUTOR OFF'; }
+    else if(ex.connected && ex.logged_in!==false){ ep.className='pill ok'; ep.textContent='EXECUTOR LIVE'; }
+    else if(ex.connected){ ep.className='pill bad'; ep.textContent='NOT LOGGED IN'; }
+    else { ep.className='pill bad'; ep.textContent='TERMINAL DOWN'; }
+    document.getElementById('t_exec').textContent = !ex.enabled ? 'disabled'
+      : (ex.connected ? ('live · done '+(ex.done||0)+' · fail '+(ex.failed||0)+' · skip '+(ex.skipped||0)) : 'disconnected');
+    document.getElementById('t_term_acct').textContent = ex.active_account || '—';
+
+    var tb=d.terminal_browser||{};
+    var ts=document.getElementById('term_state');
+    var btn=document.getElementById('launch_btn');
+    var texec=document.getElementById('term_exec');
+    var hint=document.getElementById('term_hint');
+
+    // Prominent login/terminal warning banner — only while the executor is armed AND
+    // something the operator must fix is blocking trading. Also flashes the browser tab
+    // title so a background tab shows it too.
+    var lb=document.getElementById('login_banner'), need=null;
+    if(ex.enabled){
+      if(ex.logged_in===false){ need={t:'LOG IN NEEDED — Tradovate is logged out',
+        s:'The copier is attached but your Tradovate session is signed out. Incoming orders are being HELD until you log in. Open the Tradovate tab and sign in — the copier never sees your credentials.'}; }
+      else if(!tb.browser_up){ need={t:'TERMINAL NOT OPEN',
+        s:'The executor is ON but the Tradovate browser isn’t running. Open it, then log in — orders are held meanwhile.'}; }
+      else if(tb.zombie){ need={t:'TERMINAL WINDOW CLOSED',
+        s:'The browser process is alive but its window is gone. Click to revive it, then log in.'}; }
+      else if(!tb.tradovate_tab){ need={t:'TRADOVATE TAB MISSING',
+        s:'The browser is up but no Tradovate tab is open. Open one, then log in.'}; }
+    }
+    if(need){ lb.classList.add('show');
+      document.getElementById('lb_txt').textContent=need.t;
+      document.getElementById('lb_sub').textContent=need.s;
+      document.title='🔐 LOG IN — Copier · '+(d.copier_name||''); }
+    else { lb.classList.remove('show'); document.title='Copier · '+(d.copier_name||''); }
+
+    // Pill: is the Tradovate terminal (its browser tab) OPEN? Detected directly, without
+    // the executor — so it never claims login state it can't actually know. Also flags the
+    // two anomalies you asked about: a zombie window (process alive, no tabs) and dup tabs.
+    if(!tb.browser_up){ ts.className='pill bad'; ts.textContent='TERMINAL NOT OPEN'; }
+    else if(tb.zombie){ ts.className='pill bad'; ts.textContent='WINDOW CLOSED · CLICK START TO REVIVE'; }
+    else if(!tb.tradovate_tab){ ts.className='pill warn'; ts.textContent='BROWSER UP · OPEN TRADOVATE'; }
+    else if(tb.tradovate_tabs>1){ ts.className='pill warn'; ts.textContent=tb.tradovate_tabs+' TRADOVATE TABS · CLICK START TO DEDUPE'; }
+    else { ts.className='pill ok'; ts.textContent='TRADOVATE TAB OPEN'; }
+
+    // Line: is the executor actually DRIVING that terminal? Authoritative and separate —
+    // an open tab does nothing on its own until the executor is enabled and attached.
+    if(!ex.enabled){
+      texec.innerHTML='<b style="color:var(--warn)">Executor is OFF</b> — signals will queue but are <b>not placed</b>. Set <span class="mono">EXECUTOR_ENABLED=true</span> in .env and restart to trade.';
+    } else if(!ex.connected){
+      texec.innerHTML='<b style="color:var(--accent)">Executor ON</b> — attaching to the terminal…';
+    } else if(ex.logged_in===false){
+      texec.innerHTML='<b style="color:var(--bad)">Executor ON</b> — attached, but you are <b>not logged in</b>. Log in to Tradovate in the tab.';
+    } else {
+      texec.innerHTML='<b style="color:var(--ok)">Executor ON</b> — attached and driving this terminal.';
+    }
+    if(ex.last_refresh_at){
+      texec.innerHTML += ' <span class="muted">· tab refreshed '+esc(ago(ex.last_refresh_at))+'</span>';
+    }
+
+    if(tb.can_launch===false){
+      btn.disabled=true;
+      hint.textContent='This copier can’t open a browser here (it’s in a container). Start the browser on the host desktop; the copier attaches over port '+(tb.port||9250)+'.';
+    } else {
+      btn.disabled=false;
+      btn.textContent = tb.browser_up ? 'Terminal open · re-check' : 'Start Tradovate terminal';
+    }
+
+    var term=d.terminal;
+    var tEl=document.getElementById('terminal');
+    if(term){
+      var pos=(term.positions||[]).map(function(p){
+        var n=parseFloat(p.net_pos||0);
+        return '<span class="chip '+(n>0?'buy':'sell')+'">'+esc(p.symbol)+' '+esc(p.net_pos)+(p.net_price?' @ '+esc(p.net_price):'')+'</span>';
+      }).join(' ');
+      var wo=(term.working_orders||[]).map(function(o){
+        return '<span class="chip kind">'+esc(o.action||'')+' '+esc(o.order_type||'')+' '+esc(o.contract||'')+(o.price?' @ '+esc(o.price):'')+'</span>';
+      }).join(' ');
+      tEl.innerHTML='<div class="small"><span class="muted">account</span> <span class="mono">'+esc(term.account||'—')+'</span>'
+        +' · <span class="muted">captured</span> '+esc(ago(term.captured_at))+'</div>'
+        +'<div style="margin-top:8px">'+(pos||'<span class="muted small">flat</span>')+'</div>'
+        +'<div style="margin-top:6px">'+(wo||'<span class="muted small">no working orders</span>')+'</div>';
+    } else {
+      tEl.innerHTML='<p class="empty">no snapshot yet — executor disabled or not monitoring</p>';
+    }
+    document.getElementById('lastpoll').textContent=ago(h.last_poll_at);
+    document.getElementById('refreshed').textContent=clock(new Date().toISOString());
+    var c=d.counts||{};
+    document.getElementById('t_queue').textContent=c.queued??'—';
+    document.getElementById('t_signals').textContent=c.signals_total??'—';
+    document.getElementById('t_actions').textContent=c.actions_total??'—';
+    document.getElementById('t_errors').textContent=c.errors_total??'—';
+    document.getElementById('t_poll').textContent=(h.poll_sec?h.poll_sec+'s':'—');
+    document.getElementById('t_cursor').textContent=h.cursor||'—';
+
+    var acc=document.getElementById('accounts');
+    if((d.accounts||[]).length){
+      acc.innerHTML=d.accounts.map(function(a){
+        return '<span class="acct"><span class="a">'+esc(a.alias||a.account_ref)+' <span class="muted">×'+esc(a.copy_ratio)+'</span></span>'+
+               '<span class="g">'+esc(a.account_ref)+' · '+esc((a.groups||[]).join(', ')||'no groups')+'</span></span>';
+      }).join('');
+    } else { acc.innerHTML='<p class="empty">not registered yet</p>'; }
+
+    var s=document.getElementById('signals');
+    if((d.signals||[]).length){
+      s.innerHTML=d.signals.map(function(x){
+        return '<tr><td class="muted">#'+x.signal_id+' r'+x.revision+'</td><td class="muted">'+esc(ago(x.received_at))+'</td>'+
+          '<td class="mono">'+esc(x.symbol)+'</td><td>'+chip(x.order_kind,'kind')+'</td>'+
+          '<td>'+(x.side?chip(x.side,x.side):'')+'</td><td class="num">'+x.base_qty+'</td>'+
+          '<td class="num">'+price(x)+'</td><td class="muted small">'+esc((x.target_groups||[]).join(', '))+'</td>'+
+          '<td>'+chip(x.status)+'</td></tr>';
+      }).join('');
+    } else { s.innerHTML='<tr><td colspan="9" class="empty">nothing yet</td></tr>'; }
+
+    var e=document.getElementById('events');
+    if((d.events||[]).length){
+      e.innerHTML=d.events.map(function(ev){
+        return '<div class="row"><span class="ts">'+clock(ev.ts)+'</span>'+
+          '<span class="lvl '+esc(ev.level)+'">'+esc(ev.level)+'</span>'+
+          '<span>'+esc(ev.message)+'</span></div>';
+      }).join('');
+    } else { e.innerHTML='<p class="empty">nothing yet</p>'; }
+  }
+
+  var PAGE=10, actionsOffset=0;
+  function loadActions(){
+    fetch('/api/actions?offset='+actionsOffset+'&limit='+PAGE).then(function(r){return r.json();})
+      .then(function(d){
+        var rows=d.items||[], total=d.total||0;
+        if(actionsOffset>0 && actionsOffset>=total){        // page fell past the end
+          actionsOffset=Math.max(0,(Math.ceil(total/PAGE)-1)*PAGE); return loadActions();
+        }
+        var q=document.getElementById('queue');
+        q.innerHTML = rows.length ? rows.map(actionRowHtml).join('')
+                                  : '<tr><td colspan="11" class="empty">nothing yet</td></tr>';
+        document.getElementById('a_range').textContent =
+          total ? ((d.offset+1)+'–'+(d.offset+rows.length)+' of '+total) : '0 of 0';
+        document.getElementById('a_prev').disabled = d.offset<=0;
+        document.getElementById('a_next').disabled = (d.offset+PAGE)>=total;
+      }).catch(function(){});
+  }
+
+  function tick(){
+    fetch('/api/overview').then(function(r){return r.json();}).then(render)
+      .catch(function(){ var st=document.getElementById('status');
+        st.className='pill bad'; st.textContent='DASHBOARD DISCONNECTED'; });
+    loadActions();
+  }
+  document.getElementById('lb_start').addEventListener('click', function(){
+    document.getElementById('launch_btn').click();
+    var card=document.querySelector('.card'); if(card) card.scrollIntoView({behavior:'smooth'});
+  });
+  document.getElementById('a_prev').addEventListener('click',function(){
+    actionsOffset=Math.max(0,actionsOffset-PAGE); loadActions(); });
+  document.getElementById('a_next').addEventListener('click',function(){
+    actionsOffset+=PAGE; loadActions(); });
+
+  document.getElementById('launch_btn').addEventListener('click', function(){
+    var btn=this, msg=document.getElementById('launch_msg');
+    btn.disabled=true; msg.textContent='starting the browser…';
+    fetch('/api/terminal/launch',{method:'POST'}).then(function(r){return r.json();})
+      .then(function(res){ msg.textContent=(res.ok?'✓ ':'✗ ')+(res.detail||''); btn.disabled=false; tick(); })
+      .catch(function(){ msg.textContent='✗ request failed'; btn.disabled=false; });
+  });
+
+  document.getElementById('selftest_btn').addEventListener('click', function(){
+    var btn=this, msg=document.getElementById('launch_msg');
+    btn.disabled=true; msg.textContent='testing tab access — watch the Tradovate tab…';
+    fetch('/api/terminal/selftest',{method:'POST'}).then(function(r){return r.json();})
+      .then(function(res){
+        if(res.ok && res.via==='executor'){ msg.textContent='ℹ '+(res.detail||''); }
+        else if(res.ok){
+          var extra=res.url ? ' <span class="muted">('+esc(res.title||'')+' — '+esc(res.url)+')</span>' : '';
+          if(res.tradovate_tabs>1) extra+=' <b style="color:var(--warn)">— '+res.tradovate_tabs+' Tradovate tabs open, click Start to dedupe</b>';
+          msg.innerHTML='✓ '+esc(res.detail||'')+extra;
+        } else { msg.textContent='✗ '+(res.detail||'failed'); }
+        btn.disabled=false; tick();
+      })
+      .catch(function(){ msg.textContent='✗ request failed'; btn.disabled=false; });
+  });
+
+  function maintBtn(id, url, confirmMsg, pending){
+    document.getElementById(id).addEventListener('click', function(){
+      if(confirmMsg && !confirm(confirmMsg)) return;
+      var btn=this, msg=document.getElementById('launch_msg');
+      btn.disabled=true; msg.textContent=pending;
+      fetch(url,{method:'POST'}).then(function(r){return r.json();})
+        .then(function(res){ msg.textContent=(res.ok?'✓ ':'✗ ')+(res.detail||''); btn.disabled=false; tick(); })
+        .catch(function(){ msg.textContent='✗ request failed'; btn.disabled=false; });
+    });
+  }
+  maintBtn('recycle_btn', '/api/terminal/recycle', null, 'requesting driver recycle…');
+  maintBtn('restart_btn', '/api/terminal/restart',
+           'Restart the Tradovate browser? It closes and relaunches — your login persists via the profile.',
+           'requesting browser restart…');
+
+  tick();
+  setInterval(tick, 2000);
+})();
+</script>
+</body>
+</html>

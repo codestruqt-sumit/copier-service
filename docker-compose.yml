@@ -1,0 +1,25 @@
+# One copier per VM. Put SENDER_BASE_URL / COPIER_KEY / COPIER_NAME in a .env
+# next to this file; the queue + audit trail persist in the named volume.
+services:
+  copier:
+    build: .
+    image: copier-service:latest
+    container_name: copier
+    ports:
+      - "8100:8100"
+    environment:
+      COPIER_NAME: ${COPIER_NAME:-VM-1}
+      SENDER_BASE_URL: ${SENDER_BASE_URL:?set SENDER_BASE_URL in .env}
+      COPIER_KEY: ${COPIER_KEY:?set COPIER_KEY in .env}
+      POLL_SEC: ${POLL_SEC:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - copier-data:/data
+    extra_hosts:
+      # Lets the container reach services on the host (the future Part 3 terminal
+      # bridge, or a locally-running Sender during development).
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  copier-data:
