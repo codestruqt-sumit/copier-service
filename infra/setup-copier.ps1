@@ -103,6 +103,8 @@ BROWSER_RESTART_SEC=0
 DRIVER_RECYCLE_SEC=1800
 TAB_REFRESH_SEC=600
 EXEC_IDLE_SEC=0.25
+# a slower VM needs a bigger market fill-verify window (the Positions widget lags the fill)
+NET_VERIFY_SEC=20
 
 # Telegram alerts (optional). Leave the token blank to keep Telegram OFF. To enable,
 # paste the bot token + chat id and uncomment/fill the topic ids (see TELEGRAM_SETUP.md).

@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # Market orders: use the panel's one-click Buy Mkt / Sell Mkt button (fast) with the
     # OrderTicket as a fallback. Set false to force the (slower) ticket-only route.
     market_fast_path: bool = True
+    # How long to wait for the Positions widget to reflect a market fill before giving up
+    # (and reporting "submitted but not verified" / falling back). Returns the INSTANT the
+    # fill registers, so a large value never slows a fast fill - it only helps a slow box.
+    # A slower VM needs a bigger window: set NET_VERIFY_SEC=20 there.
+    net_verify_sec: float = 12.0
 
     http_timeout_sec: float = 10.0
     log_level: str = "INFO"

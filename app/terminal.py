@@ -61,10 +61,13 @@ def _trim_price(raw: str | None) -> str | None:
 
 
 class TerminalGateway:
-    def __init__(self, fast_market: bool = True):
+    def __init__(self, fast_market: bool = True, net_verify_sec: float = 12.0):
         # fast_market: place market orders via the panel's one-click Buy Mkt / Sell Mkt
         # button (fast), falling back to the OrderTicket if the panel can't fire.
         self.fast_market = fast_market
+        # How long _await_net waits for the Positions widget to reflect a fill. Bigger on
+        # a slow box (returns early on success, so it never slows a fast fill).
+        self.net_verify_sec = float(net_verify_sec or 12.0)
         self.available = _IMPORT_ERROR is None
         self.unavailable_reason = _IMPORT_ERROR
         self.connected = False
@@ -219,12 +222,13 @@ class TerminalGateway:
                     + (result.error or ""))
         return None
 
-    def _await_net(self, symbol: str, expected: int, timeout: float = 6.0,
+    def _await_net(self, symbol: str, expected: int, timeout: float | None = None,
                    step: float = 0.25) -> bool:
         """Poll the net position until it hits `expected` (or timeout). Returns as soon
-        as the fill registers. The window is generous (6s) because under load the
-        Positions widget can take several seconds to reflect a fill - a too-tight window
-        was reporting real fills as 'net check off'."""
+        as the fill registers. The window (net_verify_sec, default 12s) is generous because
+        the Positions widget can take several seconds to reflect a fill - especially on a
+        slower VM - and a too-tight window reports real fills as 'not verified'."""
+        timeout = self.net_verify_sec if timeout is None else timeout
         deadline = time.monotonic() + timeout
         while True:
             if self._net(symbol) == expected:

@@ -44,7 +44,8 @@ def create_app(*, start_poller: bool = True, http_client=None) -> FastAPI:
     if telegram.enabled:
         log.info("telegram alerts enabled")
     worker = TerminalWorker(
-        TerminalGateway(fast_market=settings.market_fast_path),
+        TerminalGateway(fast_market=settings.market_fast_path,
+                        net_verify_sec=settings.net_verify_sec),
         client, session_factory, settings, notifier=telegram)
     # the poller reports the executor's terminal health on every heartbeat
     poller = Poller(client, session_factory, settings, health_provider=worker.health,
