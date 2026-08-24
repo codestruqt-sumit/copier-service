@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -26,6 +27,20 @@ logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
 )
+# Persist the FULL detailed log (every logger, same format) to a rotating file so
+# order-processing failures can be investigated after the fact - the console alone
+# is lost when the window closes. DATA_DIR/logs/copier.log, 5MB x 5 backups.
+try:
+    from logging.handlers import RotatingFileHandler
+
+    _log_dir = Path(settings.data_dir) / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _fh = RotatingFileHandler(_log_dir / "copier.log", maxBytes=5 * 1024 * 1024,
+                              backupCount=5, encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s [%(name)s] %(message)s"))
+    logging.getLogger().addHandler(_fh)
+except Exception:  # noqa: BLE001 - a disk problem must never block boot
+    logging.getLogger("copier.main").exception("file logging unavailable - console only")
 log = logging.getLogger("copier.main")
 
 

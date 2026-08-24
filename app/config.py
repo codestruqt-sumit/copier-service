@@ -50,8 +50,15 @@ class Settings(BaseSettings):
     # cache is older than the stale limit, execution HOLDS (fail-closed).
     killswitch_ttl_sec: float = 5.0
     killswitch_stale_block_sec: float = 60.0
-    # Terminal monitoring cadence (relaxed on purpose).
-    state_poll_sec: float = 15.0
+    # Overall per-action timeout (0 = off). COOPERATIVE: checked at gateway checkpoints
+    # (loop boundaries), never mid-click - so it can't interrupt an order submission
+    # halfway. On expiry the action fails loudly ("VERIFY manually") and is NOT re-sent.
+    # NOTE: a slow VM's legit market-with-fallback path can take ~75-90s; if you see
+    # premature aborts there, raise this (e.g. ACTION_TIMEOUT_SEC=120).
+    action_timeout_sec: float = 60.0
+    # Terminal monitoring cadence: how often the executor snapshots the active account's
+    # positions + working orders (and posts them to the Sender) while idle.
+    state_poll_sec: float = 1.0
     # --- periodic terminal maintenance (all serialized executor steps: they run only
     # BETWEEN actions, never mid-order; 0 disables each) ---------------------------------
     # Reload the Tradovate tab (page-level). Relaxed to 10 min: it's now a light backstop
@@ -70,7 +77,11 @@ class Settings(BaseSettings):
     # How often to read the 'Accounts' widget (all-accounts Open/Total P/L + Net Liq) and
     # report it to the Sender for the consolidated PnL table. Pure DOM read (no switching,
     # no network call), so it's cheap and safe. 0 disables it.
-    accounts_pnl_sec: float = 10.0
+    accounts_pnl_sec: float = 1.0
+    # Optional fixed browser window size at launch, e.g. "1600,900" (empty = browser
+    # default). A varying RDP resolution changes how many table rows render (the reads
+    # are visible-rows-only), so pinning the window removes that variable.
+    browser_window_size: str = ""
     # Executor loop pacing (speed knobs): how long to wait after acting, and how often
     # to re-check the queue when idle. Lower = snappier pickup; higher = gentler on CPU.
     exec_acted_sec: float = 0.2

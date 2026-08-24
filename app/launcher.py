@@ -193,15 +193,26 @@ def launch_terminal() -> tuple[bool, str]:
     if not _port_open(host, port):
         if binary is None:
             return False, f"{spec['label']} not found on this machine"
-        _spawn(binary, [
+        args = [
             f"--remote-debugging-port={port}",
             f"--user-data-dir={profile}",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-session-crashed-bubble",
             "--restore-last-session=false",
-            TRADOVATE_URL,
-        ])
+        ]
+        # Optional fixed window size (BROWSER_WINDOW_SIZE="1600,900"): pins the layout so
+        # a varying RDP resolution can't change how many table rows render (the copier's
+        # reads are visible-rows-only). Off by default.
+        try:
+            from app.config import settings as app_settings
+            size = (app_settings.browser_window_size or "").replace("x", ",").strip()
+            if size:
+                w, h = (int(p.strip()) for p in size.split(","))
+                args.append(f"--window-size={w},{h}")
+        except Exception:  # noqa: BLE001 - a bad value must never block the launch
+            pass
+        _spawn(binary, args + [TRADOVATE_URL])
         opened_port = False
         for _ in range(40):
             if _port_open(host, port):

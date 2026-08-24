@@ -105,6 +105,15 @@ TAB_REFRESH_SEC=600
 EXEC_IDLE_SEC=0.25
 # a slower VM needs a bigger market fill-verify window (the Positions widget lags the fill)
 NET_VERIFY_SEC=20
+# monitoring cadence: positions/working-orders snapshot + all-accounts PnL, every second
+STATE_POLL_SEC=1
+ACCOUNTS_PNL_SEC=1
+# overall per-action timeout (cooperative, never mid-click; 0=off). Code default is 60;
+# on this slower VM a legit market-with-fallback can take ~75-90s, so 120 avoids
+# aborting actions that would still succeed.
+ACTION_TIMEOUT_SEC=120
+# pin the browser window so RDP resolution changes can't hide table rows (optional)
+# BROWSER_WINDOW_SIZE=1600,900
 
 # Telegram alerts (optional). Leave the token blank to keep Telegram OFF. To enable,
 # paste the bot token + chat id and uncomment/fill the topic ids (see TELEGRAM_SETUP.md).
