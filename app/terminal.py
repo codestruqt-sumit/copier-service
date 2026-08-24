@@ -269,9 +269,14 @@ class TerminalGateway:
 
     @staticmethod
     def _submitted_note(result) -> str | None:
-        """If the ticket sent an order it could not verify, say so LOUDLY - never retry
-        (duplicate risk); the operator checks the terminal."""
-        if result.meta.get("submitted"):
+        """If the ticket sent an order and then FAILED its own verification, say so
+        LOUDLY - never retry (duplicate risk); the operator checks the terminal.
+
+        Only meaningful for FAILED results: a SUCCESSFUL ticket send also carries
+        meta.submitted=True (every sent order does), and treating that as a failure
+        misreported every successful ticket-market as "SUBMITTED but not verified"
+        (the empty trailing error was the tell - result.error was None)."""
+        if not result.ok and result.meta.get("submitted"):
             return ("order SUBMITTED but not verified - check the terminal / cancel manually: "
                     + (result.error or ""))
         return None
@@ -331,6 +336,8 @@ class TerminalGateway:
             return None
         fire = self.panel.buy_market if side == "buy" else self.panel.sell_market
         fired = fire(expect_symbol=symbol, dry_run=False, expect_qty=qty)
+        log.info("panel market %s %s: ok=%s confirm=%r err=%s", side, symbol, fired.ok,
+                 (fired.data or {}).get("confirmation"), fired.error)
         if not fired.ok:
             if self._refused_before_click({"outcome": "failed", "detail": fired.error or ""}):
                 log.info("fast market: refused before click (%s) - ticket fallback", fired.error)
@@ -359,14 +366,16 @@ class TerminalGateway:
     def _market_via_ticket(self, symbol, side, qty, before, expected) -> dict:
         # Sized attempt first (the ticket retries its own single-shot flakiness).
         result = self.ticket.place(symbol, side, qty, "MARKET", dry_run=False, max_attempts=3)
-        submitted = self._submitted_note(result)
-        if submitted:  # may have sent - never retry (duplicate risk)
-            return {"outcome": "failed", "order_ref": None, "detail": submitted}
-
-        # Unit-lot fallback: if the sized order failed cleanly (e.g. the qty-preset
-        # flake), buy/sell one lot at a time until the net reaches the target. N unit
-        # fills == one fill of N, so this is correct and safe for a market entry.
+        log.info("ticket market %s %s x%s: ok=%s submitted=%s attempts=%s err=%s",
+                 side, symbol, qty, result.ok, result.meta.get("submitted"),
+                 result.meta.get("attempts"), result.error)
         if not result.ok:
+            submitted = self._submitted_note(result)
+            if submitted:  # sent but its own verify failed - never retry (duplicate risk)
+                return {"outcome": "failed", "order_ref": None, "detail": submitted}
+            # Unit-lot fallback: the sized order failed cleanly (e.g. the qty-preset
+            # flake) - buy/sell one lot at a time until the net reaches the target. N
+            # unit fills == one fill of N, so this is correct and safe for a market entry.
             guard = qty + 3
             while self._net_thorough(symbol) != expected and guard > 0:
                 guard -= 1
@@ -380,14 +389,16 @@ class TerminalGateway:
                             "detail": f"market failed (sized and unit): {unit.error}"}
                 time.sleep(1.5)
 
-        time.sleep(1.5)
-        after = self._net_thorough(symbol)
-        if after != expected:
+        # Sent (sized success or unit loop finished) - give the fill the full verify
+        # window (returns the moment it registers; thorough reads see off-screen rows).
+        if not self._await_net(symbol, expected):
+            after = self._net_thorough(symbol)
             return {"outcome": "failed", "order_ref": None,
                     "detail": f"sent, but position check off: {before} -> {after} "
                               f"(expected {expected}) - verify manually"}
         tail = "" if result.ok else " (unit-lot fallback)"
-        return {"outcome": "filled", "order_ref": None, "detail": f"net {before} -> {after}{tail}"}
+        return {"outcome": "filled", "order_ref": None,
+                "detail": f"net {before} -> {expected}{tail} (ticket)"}
 
     def _bid_ask(self, action: dict) -> dict:
         symbol, qty = action["symbol"], int(action["qty"])

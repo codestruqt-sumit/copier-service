@@ -81,3 +81,48 @@ def test_await_net_fast_path_on_visible_match():
     g = gateway(fake)
     assert g._await_net("MNQU6", 2) is True
     assert fake.scroll_reads == 0          # matched visibly -> no drag at all
+
+
+# --- ticket-market classification: success must not be misreported as "submitted" -------
+
+class FakeTicket:
+    """place() result stub: ok + meta.submitted the way order_ticket returns them."""
+
+    def __init__(self, ok=True, submitted=True, error=None):
+        self._r = SimpleNamespace(ok=ok, error=error,
+                                  meta={"submitted": submitted, "attempts": 1}, data={})
+
+    def place(self, *a, **k):
+        return self._r
+
+
+def test_successful_ticket_market_reports_filled_not_submitted():
+    """A MARKET send returns ok=True AND meta.submitted=True; that must verify via the
+    net and report FILLED - the old code failed it as 'SUBMITTED but not verified'
+    (the empty trailing error in every such note was this bug's fingerprint)."""
+    fake_pos = FakePositions(visible={"SIU6": -1})     # the fill is on the board
+    g = gateway(fake_pos)
+    g.ticket = FakeTicket(ok=True, submitted=True)
+    out = g._market_via_ticket("SIU6", "sell", 1, before=0, expected=-1)
+    assert out["outcome"] == "filled"
+    assert "net 0 -> -1" in out["detail"]
+
+
+def test_failed_submitted_ticket_market_stays_loud():
+    """ok=False + submitted=True = sent but its own verify failed -> loud failure,
+    never retried."""
+    g = gateway(FakePositions())
+    g.ticket = FakeTicket(ok=False, submitted=True, error="orders grid empty")
+    out = g._market_via_ticket("SIU6", "sell", 1, before=0, expected=-1)
+    assert out["outcome"] == "failed"
+    assert "SUBMITTED but not verified" in out["detail"]
+    assert "orders grid empty" in out["detail"]
+
+
+def test_successful_ticket_market_with_invisible_fill_still_verifies():
+    """Success + the fill row off-screen: the thorough read must still confirm it."""
+    fake_pos = FakePositions(visible={"MNQU6": 0}, full={"SIU6": -1})
+    g = gateway(fake_pos)
+    g.ticket = FakeTicket(ok=True, submitted=True)
+    out = g._market_via_ticket("SIU6", "sell", 1, before=0, expected=-1)
+    assert out["outcome"] == "filled"
