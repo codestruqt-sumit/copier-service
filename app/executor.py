@@ -73,11 +73,15 @@ class TerminalWorker(threading.Thread):
             "last_restart_at": None,
             "last_accounts_at": None,
             "killswitch_age_sec": None,
+            "current_action": None,     # {id, kind, symbol, account, started_at} while executing
             "done": 0, "failed": 0, "skipped": 0, "held": 0,
         }
         self._killswitch: dict[str, bool] = {}
         self._killswitch_at: float = 0.0
         self._last_monitor: float = 0.0
+        # Cooperative abort of the CURRENT action: the dashboard sets the event; the
+        # gateway polls it (plus the per-action deadline) at its checkpoints.
+        self._abort_event = threading.Event()
         # periodic maintenance timers (first fire one interval from now)
         self._last_refresh: float = time.monotonic()
         self._last_driver_recycle: float = time.monotonic()
@@ -171,6 +175,29 @@ class TerminalWorker(threading.Thread):
                 "idle": idle, "held": 5.0, "disabled": 5.0}.get(outcome, 1.0)
 
     # --- terminal maintenance: forced (dashboard) + periodic (timers) -----------------
+
+    def request_abort(self) -> tuple[bool, str]:
+        """Operator control: stop the CURRENTLY EXECUTING action at its next gateway
+        checkpoint (between operations - never mid-click). The action finishes as
+        FAILED with a verify-manually note and is never re-sent. No effect when
+        nothing is executing (queued actions are handled by /api/queue/flush)."""
+        current = self.health().get("current_action")
+        if not current:
+            return False, "no action is executing right now (use 'Clear queue' for queued ones)"
+        self._abort_event.set()
+        return True, (f"abort requested for action #{current.get('id')} "
+                      f"{current.get('kind')} {current.get('symbol')} - it stops at the "
+                      f"next safe checkpoint and fails loudly (verify the terminal)")
+
+    def _abort_reason(self, deadline: float | None) -> str | None:
+        """The gateway checkpoint callback for the current action: operator abort wins,
+        then the per-action timeout."""
+        if self._abort_event.is_set():
+            return "aborted by operator"
+        if deadline is not None and time.monotonic() > deadline:
+            timeout = float(getattr(self.settings, "action_timeout_sec", 0) or 0)
+            return f"action timeout ({int(timeout)}s) exceeded"
+        return None
 
     def request_maintenance(self, kind: str) -> bool:
         """Queue a forced 'recycle' or 'restart' from the dashboard; the worker performs
@@ -353,13 +380,29 @@ class TerminalWorker(threading.Thread):
         self._log("info", "executor", f"Executing {label}")
         self._report(action, "executing")
 
-        # 4) account check (switch if needed)
-        ok, detail = self.gateway.ensure_account(action.account_ref)
-        if not ok:
-            return self._finish(db, action, "failed", detail, sender_status="failed")
+        # Arm the cooperative abort/timeout for THIS action: the gateway polls
+        # _abort_reason at its checkpoints (loop boundaries, never mid-click).
+        timeout = float(getattr(self.settings, "action_timeout_sec", 0) or 0)
+        deadline = (time.monotonic() + timeout) if timeout > 0 else None
+        self._abort_event.clear()
+        self._set(current_action={"id": action.id, "kind": action.kind,
+                                  "symbol": action.symbol,
+                                  "account": action.account_alias or action.account_ref,
+                                  "started_at": _utcnow().isoformat()})
+        self.gateway.abort_check = lambda: self._abort_reason(deadline)
 
-        # 5) execute (symbol check + validation live inside the validated flows)
-        result = self.gateway.execute(self._action_dict(action))
+        try:
+            # 4) account check (switch if needed)
+            ok, detail = self.gateway.ensure_account(action.account_ref)
+            if not ok:
+                return self._finish(db, action, "failed", detail, sender_status="failed")
+
+            # 5) execute (symbol check + validation live inside the validated flows)
+            result = self.gateway.execute(self._action_dict(action))
+        finally:
+            self.gateway.abort_check = None
+            self._abort_event.clear()
+            self._set(current_action=None)
         outcome = result.get("outcome", "failed")
         note = result.get("detail") or ""
         action.order_ref = result.get("order_ref")

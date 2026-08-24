@@ -121,6 +121,7 @@
       <button class="btn secondary" id="recycle_btn">Recycle driver</button>
       <button class="btn secondary" id="restart_btn">Restart browser</button>
       <button class="btn secondary" id="flush_btn">Clear queue &amp; skip to now</button>
+      <button class="btn secondary" id="abort_btn" disabled title="Stops the currently executing action at its next safe checkpoint">Abort current action</button>
       <span id="term_state" class="pill warn">checking…</span>
     </div>
     <div class="small" id="term_exec" style="margin-top:11px"></div>
@@ -260,6 +261,12 @@
     if(ex.last_refresh_at){
       texec.innerHTML += ' <span class="muted">· tab refreshed '+esc(ago(ex.last_refresh_at))+'</span>';
     }
+    // Currently-executing action: show it and arm the Abort button only while one runs.
+    var cur=ex.current_action, ab=document.getElementById('abort_btn');
+    if(cur){
+      texec.innerHTML += ' <b style="color:var(--warn)">· executing #'+esc(cur.id)+' '+esc(cur.kind)+' '+esc(cur.symbol)+' ('+esc(ago(cur.started_at))+')</b>';
+      ab.disabled=false;
+    } else { ab.disabled=true; }
 
     if(tb.can_launch===false){
       btn.disabled=true;
@@ -399,6 +406,9 @@
   maintBtn('flush_btn', '/api/queue/flush',
            'Clear ALL queued actions and skip to only-new signals?\n\nQueued orders will NOT be placed. The copier will ignore everything already sent and act only on signals from now on.',
            'clearing queue + deferring cursor to now…');
+  maintBtn('abort_btn', '/api/executor/abort',
+           'Abort the currently executing action?\n\nIt stops at the next safe checkpoint (never mid-click), fails loudly, and is NOT re-sent. An order may already be on the terminal — verify there afterwards.',
+           'requesting abort of the current action…');
 
   tick();
   setInterval(tick, 2000);

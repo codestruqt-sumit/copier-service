@@ -383,3 +383,70 @@ def test_accounts_pnl_disabled_when_zero(gateway, sender_client, session_factory
     w._maybe_report_accounts()
     assert fake_sender.accounts == []
     assert "read_accounts_summary" not in gateway.calls
+
+
+# --- abort + per-action timeout (cooperative, checkpoint-based) --------------------------
+
+class CheckpointGateway(FakeGateway):
+    """A gateway whose execute() honors abort_check the way the real one does: it polls
+    at 'checkpoints' and returns the ABORTED failure dict when a reason appears."""
+
+    def __init__(self, spin_sec: float = 3.0):
+        super().__init__()
+        self.abort_check = None
+        self.spin_sec = spin_sec
+
+    def execute(self, action):
+        import time as _t
+        deadline = _t.monotonic() + self.spin_sec
+        while _t.monotonic() < deadline:
+            reason = self.abort_check() if self.abort_check else None
+            if reason:
+                return {"outcome": "failed", "order_ref": None,
+                        "detail": f"ABORTED: {reason} - an order may already be on the "
+                                  f"terminal; VERIFY manually (not retried)"}
+            _t.sleep(0.05)
+        return dict(self.execute_result)
+
+
+def test_action_timeout_aborts_a_looping_action(sender_client, session_factory, fake_sender):
+    gw = CheckpointGateway(spin_sec=5.0)
+    worker = TerminalWorker(gw, sender_client, session_factory,
+                            worker_settings(action_timeout_sec=0.3))
+    action_id = queue_action(session_factory)
+    worker.step()
+    action = get_action(session_factory, action_id)
+    assert action.status == "failed"
+    assert "timeout" in action.note and "VERIFY" in action.note
+    assert [r["status"] for r in fake_sender.reports] == ["executing", "failed"]
+    assert worker.health()["current_action"] is None        # cleared after the action
+
+
+def test_operator_abort_stops_current_action(sender_client, session_factory, fake_sender):
+    import threading as _th
+
+    gw = CheckpointGateway(spin_sec=5.0)
+    worker = TerminalWorker(gw, sender_client, session_factory,
+                            worker_settings(action_timeout_sec=0.0))  # timeout off
+    action_id = queue_action(session_factory)
+    # the "operator" clicks Abort shortly after execution starts
+    _th.Timer(0.2, worker.request_abort).start()
+    worker.step()
+    action = get_action(session_factory, action_id)
+    assert action.status == "failed"
+    assert "aborted by operator" in action.note
+    assert not worker._abort_event.is_set()                 # re-armed for the next action
+
+
+def test_abort_refused_when_nothing_executing(worker):
+    ok, detail = worker.request_abort()
+    assert ok is False and "no action" in detail
+
+
+def test_timeout_zero_disables_the_deadline(sender_client, session_factory):
+    gw = CheckpointGateway(spin_sec=0.4)                    # finishes before any deadline
+    worker = TerminalWorker(gw, sender_client, session_factory,
+                            worker_settings(action_timeout_sec=0.0))
+    action_id = queue_action(session_factory)
+    worker.step()
+    assert get_action(session_factory, action_id).status == "done"

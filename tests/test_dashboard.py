@@ -203,6 +203,20 @@ def test_healthz_reports_dead_poller(session_factory, poller):
     assert "poller dead" in response.text
 
 
+def test_executor_abort_route(session_factory, poller):
+    """POST /api/executor/abort delegates to worker.request_abort and relays its answer."""
+    client = make_app(session_factory, poller)
+    client.app.state.worker = SimpleNamespace(
+        request_abort=lambda: (True, "abort requested for action #7"))
+    res = client.post("/api/executor/abort").json()
+    assert res["ok"] is True and "#7" in res["detail"]
+
+    client.app.state.worker = SimpleNamespace(
+        request_abort=lambda: (False, "no action is executing right now"))
+    res = client.post("/api/executor/abort").json()
+    assert res["ok"] is False and "no action" in res["detail"]
+
+
 def test_queue_flush_cancels_queued_and_defers_cursor(session_factory, poller, fake_sender):
     """The 'Clear queue & skip to now' control: cancel every queued action and advance
     the cursor to the Sender's latest, so only newer signals are acted on."""

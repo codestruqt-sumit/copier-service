@@ -37,6 +37,13 @@ except Exception as exc:  # noqa: BLE001  pragma: no cover
 
 TRADOVATE_NEEDLE = "trader.tradovate.com"
 
+
+class AbortRequested(RuntimeError):
+    """Raised at a gateway CHECKPOINT when the executor asks the in-flight action to
+    stop (operator abort or the per-action timeout). Checkpoints sit BETWEEN
+    operations (loop boundaries) - never inside a click/confirm sequence - so an
+    abort can never interrupt an order submission halfway."""
+
 # Action kinds that leave a resting order in the book (reported as 'executing').
 RESTING_KINDS = {"place_limit", "place_stop", "place_bid", "place_ask"}
 
@@ -68,6 +75,10 @@ class TerminalGateway:
         # How long _await_net waits for the Positions widget to reflect a fill. Bigger on
         # a slow box (returns early on success, so it never slows a fast fill).
         self.net_verify_sec = float(net_verify_sec or 12.0)
+        # Optional callable set by the executor for the CURRENT action only: returns a
+        # reason string when the action should stop (operator abort / timeout), else
+        # None. Polled at _checkpoint() sites - loop boundaries, never mid-click.
+        self.abort_check = None
         self.available = _IMPORT_ERROR is None
         self.unavailable_reason = _IMPORT_ERROR
         self.connected = False
@@ -163,6 +174,19 @@ class TerminalGateway:
 
     # --- execution -------------------------------------------------------------------
 
+    def _checkpoint(self) -> None:
+        """Between-operations stop point: raises AbortRequested when the executor set
+        an abort/timeout for the current action. Cheap (one callable poll)."""
+        check = self.abort_check
+        if check is None:
+            return
+        try:
+            reason = check()
+        except Exception:  # noqa: BLE001 - a broken check must never break execution
+            return
+        if reason:
+            raise AbortRequested(reason)
+
     def execute(self, action: dict) -> dict:
         """Run one queue action. Returns {outcome, order_ref, detail}.
 
@@ -187,6 +211,7 @@ class TerminalGateway:
             if handler is None:
                 return {"outcome": "failed", "order_ref": None,
                         "detail": f"unknown action kind '{kind}'"}
+            self._checkpoint()
             result = handler(action)
             if kind in _PANEL_KINDS and self._refused_before_click(result):
                 # The chart panel can render blank for a beat right after an account
@@ -194,9 +219,17 @@ class TerminalGateway:
                 # was fired, so ONE settled retry is safe. (Never retry after a click
                 # may have happened - that could double an order.)
                 log.info("pre-click refusal on %s - settling and retrying once", kind)
+                self._checkpoint()
                 time.sleep(2.0)
                 result = handler(action)
             return result
+        except AbortRequested as exc:
+            # Cooperative stop between operations. An operation ALREADY performed may
+            # have reached the terminal - never re-send; the operator verifies.
+            log.warning("action aborted at checkpoint: %s", exc)
+            return {"outcome": "failed", "order_ref": None,
+                    "detail": f"ABORTED: {exc} - an order may already be on the "
+                              f"terminal; VERIFY manually (not retried)"}
         except Exception as exc:  # noqa: BLE001
             self.connected = False
             return {"outcome": "failed", "order_ref": None,
@@ -235,6 +268,7 @@ class TerminalGateway:
                 return True
             if time.monotonic() >= deadline:
                 return self._net(symbol) == expected
+            self._checkpoint()   # abort/timeout can stop the wait between polls
             time.sleep(step)
 
     def _market(self, action: dict) -> dict:
@@ -302,6 +336,7 @@ class TerminalGateway:
             guard = qty + 3
             while self._net(symbol) != expected and guard > 0:
                 guard -= 1
+                self._checkpoint()   # stop point between unit-lot sends
                 unit = self.ticket.place(symbol, side, 1, "MARKET", dry_run=False, max_attempts=2)
                 if not unit.ok:
                     unit_submitted = self._submitted_note(unit)
@@ -322,6 +357,9 @@ class TerminalGateway:
 
     def _bid_ask(self, action: dict) -> dict:
         symbol, qty = action["symbol"], int(action["qty"])
+        side = "buy" if action["kind"] == "place_bid" else "sell"
+        before = self._net(symbol)
+        expected = before + (qty if side == "buy" else -qty)
         switched = self.tabs.switch_to(symbol)
         if not switched.ok:
             return {"outcome": "failed", "order_ref": None,
@@ -334,12 +372,35 @@ class TerminalGateway:
         fired = fire(expect_symbol=symbol, dry_run=False, expect_qty=qty)
         if not fired.ok:
             return {"outcome": "failed", "order_ref": None, "detail": fired.error}
-        # A joined bid/ask may rest or fill instantly - look for a working order.
-        order_ref = self._find_working_ref(symbol)
+        # Classify honestly: a joined bid/ask may rest OR fill instantly. The old code
+        # scanned the (visible) Orders grid ONCE with no wait, so a resting order that
+        # had not rendered yet was misreported as "filled on join". Now poll briefly
+        # for EITHER a working order (-> executing) or the net moving (-> verified
+        # fill); claim a fill ONLY when the position actually moved.
+        order_ref = None
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline:
+            order_ref = self._find_working_ref(symbol)
+            if order_ref:
+                break
+            if self._net(symbol) == expected:
+                break
+            self._checkpoint()
+            time.sleep(0.4)
+        after = self._net(symbol)
+        log.info("bid/ask classify %s %s: net %s->%s (expected %s), working_ref=%s",
+                 side, symbol, before, after, expected, order_ref)
         if order_ref:
             return {"outcome": "executing", "order_ref": order_ref,
                     "detail": "joined the book, order working"}
-        return {"outcome": "filled", "order_ref": None, "detail": "filled on join"}
+        if after == expected:
+            return {"outcome": "filled", "order_ref": None,
+                    "detail": f"filled on join (net verified {before} -> {after})"}
+        # Sent, but neither a fill nor a visible working order yet - report honestly
+        # instead of claiming a fill; monitoring/state will show what it became.
+        return {"outcome": "executing", "order_ref": None,
+                "detail": f"sent - fill/working order not visible yet (net {before} -> "
+                          f"{after}, expected {expected}); verify on the terminal"}
 
     def _resting(self, action: dict) -> dict:
         order_type = "LIMIT" if action["kind"] == "place_limit" else "STOP"
@@ -381,7 +442,15 @@ class TerminalGateway:
         """
         start = self._net(symbol_root)
         if start == 0:
-            return True, f"{symbol_root} already flat"
+            # Confirm with a second read: a single visible-rows read can transiently
+            # miss the position row (mid-render / small window) and a false "already
+            # flat" here would skip a REAL exit. Two agreeing reads are required.
+            time.sleep(0.6)
+            confirm = self._net(symbol_root)
+            log.info("flatten %s: first read net=0, confirm read net=%s", symbol_root, confirm)
+            if confirm == 0:
+                return True, f"{symbol_root} already flat"
+            start = confirm
         last_err = ""
         used_units = False
 
@@ -392,6 +461,7 @@ class TerminalGateway:
                 break
             side = "sell" if net > 0 else "buy"
             if attempt > 1:
+                self._checkpoint()   # stop point between flatten attempts
                 time.sleep(1.5)
             result = self.ticket.place(symbol_root, side, abs(net), "MARKET",
                                        dry_run=False, max_attempts=2)
@@ -409,6 +479,7 @@ class TerminalGateway:
         guard = abs(start) + 3
         while self._net(symbol_root) != 0 and guard > 0:
             guard -= 1
+            self._checkpoint()   # stop point between unit-lot flatten sends
             net = self._net(symbol_root)
             side = "sell" if net > 0 else "buy"
             unit = self.ticket.place(symbol_root, side, 1, "MARKET",
@@ -455,9 +526,22 @@ class TerminalGateway:
             if left:
                 detail += f"; {left} working order(s) still resting - cancel manually"
             return {"outcome": "filled", "order_ref": None, "detail": detail}
-        time.sleep(1.2)
+        # The Exit&Cxl CLICK succeeded - now VERIFY flatness before claiming it. The old
+        # code reported "flat" without re-reading the position, which could show an exit
+        # as done while the position remained (the misreported-exit bug).
+        flat = self._await_net(symbol, 0)
+        if not flat:
+            residual = self._net(symbol)
+            log.warning("exit %s: net still %s after Exit&Cxl - flatten fallback", symbol, residual)
+            fok, fnote = self._flatten_symbol(symbol)
+            if not fok:
+                return {"outcome": "failed", "order_ref": None,
+                        "detail": f"Exit&Cxl clicked but {symbol} NOT flat (net {residual}); "
+                                  f"fallback: {fnote} - VERIFY on the terminal"}
+            return {"outcome": "filled", "order_ref": None,
+                    "detail": f"Exit at Mkt & Cxl + flatten fallback ({fnote})"}
         left = sum(1 for o in self._working_fast() if symbol in (o.get("contract") or ""))
-        detail = f"Exit at Mkt & Cxl - {symbol} flat"
+        detail = f"Exit at Mkt & Cxl - {symbol} flat (net verified)"
         if left:
             detail += f"; {left} order(s) still resting"
         return {"outcome": "filled", "order_ref": None, "detail": detail}
@@ -479,6 +563,9 @@ class TerminalGateway:
         failures = []
         for symbol in targets:
             ok, note = self._panel_exit(symbol)
+            if ok and not self._await_net(symbol, 0):
+                # clicked, but the position did not go flat - treat like a panel failure
+                ok, note = False, f"Exit&Cxl clicked but net still {self._net(symbol)}"
             if not ok:
                 fok, _fnote = self._flatten_symbol(symbol)   # fallback: at least get flat
                 if not fok:

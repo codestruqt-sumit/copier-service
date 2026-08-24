@@ -221,6 +221,19 @@ def activity(request: Request, since: int = 0, limit: int = 300) -> dict:
     }
 
 
+@router.post("/api/executor/abort")
+def executor_abort(request: Request) -> dict:
+    """Operator control: halt the CURRENTLY EXECUTING action at its next safe gateway
+    checkpoint (between operations, never mid-click). The action fails loudly with a
+    verify-manually note and is never re-sent. Queued actions are untouched (use
+    /api/queue/flush for those)."""
+    worker = getattr(request.app.state, "worker", None)
+    if worker is None:
+        return {"ok": False, "detail": "no executor worker"}
+    ok, detail = worker.request_abort()
+    return {"ok": ok, "detail": detail}
+
+
 @router.post("/api/queue/flush")
 def queue_flush(request: Request) -> dict:
     """Operator control: CANCEL all queued actions and DEFER the cursor to the Sender's
