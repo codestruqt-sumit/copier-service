@@ -237,14 +237,35 @@ class TerminalGateway:
 
     # --- handlers (each built ONLY from validated flows) ------------------------------
 
-    def _net(self, symbol: str) -> int:
-        # scroll=False: never drag the Positions scrollbar (that can move/close a
-        # golden-layout widget). This runs on the hot path (before/after every order
-        # and in the fill-verify poll), and the symbols we trade are always visible.
-        got = self.positions.get(symbol, scroll=False)
+    def _net_read(self, symbol: str, scroll: bool) -> tuple[bool, int]:
+        """(row_found, net). found=False means the row was NOT in the read - which with
+        scroll=False only proves it wasn't among the VISIBLE rows."""
+        got = self.positions.get(symbol, scroll=scroll)
         if got.ok and got.data.get("found") and got.data.get("position"):
-            return got.data["position"].get("net_pos") or 0
-        return 0
+            return True, got.data["position"].get("net_pos") or 0
+        return False, 0
+
+    def _net(self, symbol: str) -> int:
+        # Visible-rows-only (scroll=False - never drags the scrollbar). ONLY for the
+        # tight polls; every DECISION read must use _net_thorough: the Positions widget
+        # keeps one row per traded symbol all session, and rows below the fold are
+        # VIRTUALIZED OUT of the DOM - a visible-only read returns 0 for a real position
+        # (proven live: MGCZ6 fills read net 0->0 while MNQU6 verified fine).
+        return self._net_read(symbol, scroll=False)[1]
+
+    def _net_thorough(self, symbol: str) -> int:
+        """The truth: visible read first (free); if the row is not among the visible
+        rows, re-read WITH scrolling. The scrolled read only drags when the grid really
+        overflows (tables.read_table no-ops the drag when not scrollable), and the drag
+        is hit-test-guarded - so this is cheap when rows fit and correct when they don't."""
+        found, net = self._net_read(symbol, scroll=False)
+        if found:
+            return net
+        found2, net2 = self._net_read(symbol, scroll=True)
+        if found2:
+            log.info("positions row %s was OFF-SCREEN - visible read missed it (net=%s)",
+                     symbol, net2)
+        return net2
 
     @staticmethod
     def _submitted_note(result) -> str | None:
@@ -263,17 +284,28 @@ class TerminalGateway:
         slower VM - and a too-tight window reports real fills as 'not verified'."""
         timeout = self.net_verify_sec if timeout is None else timeout
         deadline = time.monotonic() + timeout
+        last_thorough = 0.0
         while True:
-            if self._net(symbol) == expected:
+            found, net = self._net_read(symbol, scroll=False)
+            # A VISIBLE row is real data - accept its match. A visible-only 0 with the
+            # row absent is NOT proof (it may be off-screen), so confirm those via a
+            # scrolled read - immediately on the first miss, then at most every 5s, and
+            # always once more at the deadline.
+            if found and net == expected:
                 return True
+            now = time.monotonic()
+            if (now - last_thorough) >= 5.0 or now >= deadline:
+                last_thorough = now
+                if self._net_thorough(symbol) == expected:
+                    return True
             if time.monotonic() >= deadline:
-                return self._net(symbol) == expected
+                return False
             self._checkpoint()   # abort/timeout can stop the wait between polls
             time.sleep(step)
 
     def _market(self, action: dict) -> dict:
         symbol, side, qty = action["symbol"], action["side"], int(action["qty"])
-        before = self._net(symbol)
+        before = self._net_thorough(symbol)   # baseline must see off-screen rows too
         expected = before + (qty if side == "buy" else -qty)
 
         # FAST PATH: the panel's one-click Buy Mkt / Sell Mkt (the button a human uses).
@@ -313,7 +345,9 @@ class TerminalGateway:
         # ticket ONLY if nothing landed (net unchanged AND no new working order for the
         # symbol) - then a market that plainly didn't place is safe to re-send. If
         # something DID land (net moved, or an order is resting), never re-send.
-        after = self._net(symbol)
+        # THOROUGH read is mandatory here: a visible-only miss of an off-screen filled
+        # row would green-light the ticket fallback = a DOUBLE market order.
+        after = self._net_thorough(symbol)
         if after == before and not self._find_working_ref(symbol):
             log.info("fast market: fired but nothing landed (net still %s, no working "
                      "order) - ticket fallback", after)
@@ -334,7 +368,7 @@ class TerminalGateway:
         # fills == one fill of N, so this is correct and safe for a market entry.
         if not result.ok:
             guard = qty + 3
-            while self._net(symbol) != expected and guard > 0:
+            while self._net_thorough(symbol) != expected and guard > 0:
                 guard -= 1
                 self._checkpoint()   # stop point between unit-lot sends
                 unit = self.ticket.place(symbol, side, 1, "MARKET", dry_run=False, max_attempts=2)
@@ -347,7 +381,7 @@ class TerminalGateway:
                 time.sleep(1.5)
 
         time.sleep(1.5)
-        after = self._net(symbol)
+        after = self._net_thorough(symbol)
         if after != expected:
             return {"outcome": "failed", "order_ref": None,
                     "detail": f"sent, but position check off: {before} -> {after} "
@@ -358,7 +392,7 @@ class TerminalGateway:
     def _bid_ask(self, action: dict) -> dict:
         symbol, qty = action["symbol"], int(action["qty"])
         side = "buy" if action["kind"] == "place_bid" else "sell"
-        before = self._net(symbol)
+        before = self._net_thorough(symbol)   # baseline must see off-screen rows too
         expected = before + (qty if side == "buy" else -qty)
         switched = self.tabs.switch_to(symbol)
         if not switched.ok:
@@ -387,7 +421,7 @@ class TerminalGateway:
                 break
             self._checkpoint()
             time.sleep(0.4)
-        after = self._net(symbol)
+        after = self._net_thorough(symbol)   # the verdict must see off-screen rows
         log.info("bid/ask classify %s %s: net %s->%s (expected %s), working_ref=%s",
                  side, symbol, before, after, expected, order_ref)
         if order_ref:
@@ -440,13 +474,12 @@ class TerminalGateway:
         flake). A submitted-but-unverified send is NEVER retried (duplicate risk);
         a successful send is trusted and only verified.
         """
-        start = self._net(symbol_root)
+        start = self._net_thorough(symbol_root)
         if start == 0:
-            # Confirm with a second read: a single visible-rows read can transiently
-            # miss the position row (mid-render / small window) and a false "already
-            # flat" here would skip a REAL exit. Two agreeing reads are required.
+            # Confirm with a second thorough read: a transient mid-render miss on a
+            # false "already flat" here would skip a REAL exit.
             time.sleep(0.6)
-            confirm = self._net(symbol_root)
+            confirm = self._net_thorough(symbol_root)
             log.info("flatten %s: first read net=0, confirm read net=%s", symbol_root, confirm)
             if confirm == 0:
                 return True, f"{symbol_root} already flat"
@@ -456,7 +489,7 @@ class TerminalGateway:
 
         # Phase 1: one correctly-sized opposite MARKET (retry only on clean failures).
         for attempt in range(1, attempts + 1):
-            net = self._net(symbol_root)
+            net = self._net_thorough(symbol_root)
             if net == 0:
                 break
             side = "sell" if net > 0 else "buy"
@@ -477,10 +510,10 @@ class TerminalGateway:
         # order won't commit (a known qty-preset flake), close one lot at a time until
         # flat. This bulletproofs the safety-critical path. Bounded to avoid a loop.
         guard = abs(start) + 3
-        while self._net(symbol_root) != 0 and guard > 0:
+        while self._net_thorough(symbol_root) != 0 and guard > 0:
             guard -= 1
             self._checkpoint()   # stop point between unit-lot flatten sends
-            net = self._net(symbol_root)
+            net = self._net_thorough(symbol_root)
             side = "sell" if net > 0 else "buy"
             unit = self.ticket.place(symbol_root, side, 1, "MARKET",
                                      dry_run=False, max_attempts=2)
@@ -492,7 +525,7 @@ class TerminalGateway:
                 last_err = unit.error or last_err
             time.sleep(1.5)
 
-        now = self._net(symbol_root)
+        now = self._net_thorough(symbol_root)
         tail = " (unit-lot fallback)" if used_units else ""
         if now == 0:
             return True, f"{symbol_root} net {start} -> 0{tail}"
@@ -531,7 +564,7 @@ class TerminalGateway:
         # as done while the position remained (the misreported-exit bug).
         flat = self._await_net(symbol, 0)
         if not flat:
-            residual = self._net(symbol)
+            residual = self._net_thorough(symbol)
             log.warning("exit %s: net still %s after Exit&Cxl - flatten fallback", symbol, residual)
             fok, fnote = self._flatten_symbol(symbol)
             if not fok:
@@ -565,7 +598,7 @@ class TerminalGateway:
             ok, note = self._panel_exit(symbol)
             if ok and not self._await_net(symbol, 0):
                 # clicked, but the position did not go flat - treat like a panel failure
-                ok, note = False, f"Exit&Cxl clicked but net still {self._net(symbol)}"
+                ok, note = False, f"Exit&Cxl clicked but net still {self._net_thorough(symbol)}"
             if not ok:
                 fok, _fnote = self._flatten_symbol(symbol)   # fallback: at least get flat
                 if not fok:
