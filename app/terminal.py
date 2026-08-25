@@ -79,6 +79,9 @@ class TerminalGateway:
         # reason string when the action should stop (operator abort / timeout), else
         # None. Polled at _checkpoint() sites - loop boundaries, never mid-click.
         self.abort_check = None
+        # Set by handlers the moment an order is LIVE on the terminal (send accepted),
+        # so execute() can annotate order-live vs verified latency separately.
+        self._live_at = None
         self.available = _IMPORT_ERROR is None
         self.unavailable_reason = _IMPORT_ERROR
         self.connected = False
@@ -174,6 +177,54 @@ class TerminalGateway:
 
     # --- execution -------------------------------------------------------------------
 
+    # One JS round-trip: the chart trade panel's current contract symbol (the panel is
+    # the lm_stack anchored by its unique 'Buy Bid' button; the DOM ladder has none).
+    _PANEL_SYMBOL_JS = r"""
+        var stack=null;
+        document.querySelectorAll('.lm_stack').forEach(function(s){
+          if(stack) return;
+          var btns=s.querySelectorAll('div.btn');
+          for(var i=0;i<btns.length;i++){
+            if((btns[i].textContent||'').trim()==='Buy Bid'){stack=s;return;}
+          }
+        });
+        if(!stack) return null;
+        var el=stack.querySelector('.contract-symbol');
+        return el ? (el.textContent||'').trim() : null;
+    """
+
+    def _ensure_tab(self, symbol: str):
+        """Workspace switch with a cheap early-exit: ONE JS read of the panel's current
+        symbol; if it already matches, skip the full switch (snapshot + match + click,
+        ~1-2s). Safe even if the read is ever wrong - the panel's own expect_symbol
+        guard still refuses to click on a mismatch."""
+        want = (symbol or "").strip().upper()
+        try:
+            current = self.driver.execute_script(self._PANEL_SYMBOL_JS)
+        except Exception:  # noqa: BLE001 - fall through to the real switch
+            current = None
+        if current and (current.upper().startswith(want) or want.startswith(current.upper())):
+            from types import SimpleNamespace
+            return SimpleNamespace(ok=True, error=None, data={"skipped": True})
+        return self.tabs.switch_to(symbol)
+
+    def _mark_live(self) -> None:
+        """Call the moment a send is ACCEPTED by the terminal - order-live time."""
+        self._live_at = time.monotonic()
+
+    def _annotate_latency(self, result: dict, t0: float) -> dict:
+        """Append '[live +X.Xs, verified +Y.Ys]' to successful results: 'live' is when
+        the order reached the terminal (what prices slippage), 'verified' is when the
+        outcome was confirmed. Keeps the two numbers from blurring into one."""
+        try:
+            if result.get("outcome") in ("filled", "executing") and self._live_at is not None:
+                result["detail"] = (result.get("detail") or "") + (
+                    f" [live +{self._live_at - t0:.1f}s, "
+                    f"verified +{time.monotonic() - t0:.1f}s]")
+        except Exception:  # noqa: BLE001 - annotation must never break a result
+            pass
+        return result
+
     def _checkpoint(self) -> None:
         """Between-operations stop point: raises AbortRequested when the executor set
         an abort/timeout for the current action. Cheap (one callable poll)."""
@@ -197,6 +248,8 @@ class TerminalGateway:
         verifies the symbol inside the ticket itself.
         """
         kind = action["kind"]
+        t0 = time.monotonic()
+        self._live_at = None   # handlers stamp this the moment the send is accepted
         try:
             handler = {
                 "place_market": self._market,
@@ -222,7 +275,7 @@ class TerminalGateway:
                 self._checkpoint()
                 time.sleep(2.0)
                 result = handler(action)
-            return result
+            return self._annotate_latency(result, t0)
         except AbortRequested as exc:
             # Cooperative stop between operations. An operation ALREADY performed may
             # have reached the terminal - never re-send; the operator verifies.
@@ -326,7 +379,7 @@ class TerminalGateway:
     def _market_via_panel(self, symbol, side, qty, before, expected) -> dict | None:
         """Returns a result dict if the panel handled it (fired), or None if nothing was
         sent (pre-click failure) so the caller can fall back to the ticket."""
-        switched = self.tabs.switch_to(symbol)
+        switched = self._ensure_tab(symbol)
         if not switched.ok:
             log.info("fast market: tab switch failed (%s) - ticket fallback", switched.error)
             return None
@@ -338,6 +391,8 @@ class TerminalGateway:
         fired = fire(expect_symbol=symbol, dry_run=False, expect_qty=qty)
         log.info("panel market %s %s: ok=%s confirm=%r err=%s", side, symbol, fired.ok,
                  (fired.data or {}).get("confirmation"), fired.error)
+        if fired.ok:
+            self._mark_live()
         if not fired.ok:
             if self._refused_before_click({"outcome": "failed", "detail": fired.error or ""}):
                 log.info("fast market: refused before click (%s) - ticket fallback", fired.error)
@@ -369,6 +424,8 @@ class TerminalGateway:
         log.info("ticket market %s %s x%s: ok=%s submitted=%s attempts=%s err=%s",
                  side, symbol, qty, result.ok, result.meta.get("submitted"),
                  result.meta.get("attempts"), result.error)
+        if result.ok or result.meta.get("submitted"):
+            self._mark_live()
         if not result.ok:
             submitted = self._submitted_note(result)
             if submitted:  # sent but its own verify failed - never retry (duplicate risk)
@@ -405,7 +462,7 @@ class TerminalGateway:
         side = "buy" if action["kind"] == "place_bid" else "sell"
         before = self._net_thorough(symbol)   # baseline must see off-screen rows too
         expected = before + (qty if side == "buy" else -qty)
-        switched = self.tabs.switch_to(symbol)
+        switched = self._ensure_tab(symbol)
         if not switched.ok:
             return {"outcome": "failed", "order_ref": None,
                     "detail": f"symbol switch failed: {switched.error}"}
@@ -417,6 +474,7 @@ class TerminalGateway:
         fired = fire(expect_symbol=symbol, dry_run=False, expect_qty=qty)
         if not fired.ok:
             return {"outcome": "failed", "order_ref": None, "detail": fired.error}
+        self._mark_live()
         # Classify honestly: a joined bid/ask may rest OR fill instantly. The old code
         # scanned the (visible) Orders grid ONCE with no wait, so a resting order that
         # had not rendered yet was misreported as "filled on join". Now poll briefly
@@ -547,13 +605,14 @@ class TerminalGateway:
         working orders in one reliable action (Tradovate's own combined control).
         The panel symbol now reads reliably (textContent fix), so this is the primary
         exit path - guaranteed '& Cxl', not the flaky right-click."""
-        sw = self.tabs.switch_to(symbol_root)
+        sw = self._ensure_tab(symbol_root)
         if not sw.ok:
             return False, f"tab switch failed: {sw.error}"
         time.sleep(0.4)
         res = self.panel.exit_at_mkt(expect_symbol=symbol_root, dry_run=False)
         if not res.ok:
             return False, res.error or "exit at mkt & cxl failed"
+        self._mark_live()
         return True, "Exit at Mkt & Cxl"
 
     def _exit_symbol(self, action: dict) -> dict:

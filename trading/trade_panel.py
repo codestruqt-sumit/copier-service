@@ -84,6 +84,13 @@ class ChartTradePanel(TerminalModule):
             result.enter("locate_qty")
             qty_el = actions.require(scope, locators.TRADE_QTY_INPUT,
                                      "trade panel qty input", timeout=4)
+            # SHORT-CIRCUIT (2026-08-25): the panel qty is sticky; when it already shows
+            # the target there is nothing to type or verify - skip the type+tick+verify
+            # (~1s per action, and qty is almost always unchanged between signals).
+            current = (qty_el.get_attribute("value") or "").strip()
+            if current == str(int(qty)):
+                result.meta["qty_shortcircuit"] = True
+                return self._finish(result.succeed({"qty": int(qty)}))
             self.tick()
 
             result.enter("type_qty")

@@ -90,7 +90,7 @@ COPIER_KEY=PASTE_EXISTING_COPIER_KEY_HERE
 COPIER_NAME=VM-AZURE-1
 EXECUTOR_ENABLED=true
 DATA_DIR=./data
-POLL_SEC=1
+POLL_SEC=0.5
 
 # local dashboard bind. 0.0.0.0 = all interfaces (still only reachable ON the VM unless you
 # open port 8100 in the NSG - which you should NOT: the dashboard drives the terminal).

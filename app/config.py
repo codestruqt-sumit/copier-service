@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     # to re-check the queue when idle. Lower = snappier pickup; higher = gentler on CPU.
     exec_acted_sec: float = 0.2
     exec_idle_sec: float = 0.25
+    # Post execution reports / state / accounts to the Sender on background threads so
+    # network RTT never delays the next terminal step. False = inline (tests use this;
+    # also a safe fallback if async ever misbehaves).
+    sender_post_async: bool = True
     # Market orders: use the panel's one-click Buy Mkt / Sell Mkt button (fast) with the
     # OrderTicket as a fallback. Set false to force the (slower) ticket-only route.
     market_fast_path: bool = True

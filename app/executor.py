@@ -455,20 +455,35 @@ class TerminalWorker(threading.Thread):
         self._bump("held")
         self._log("warn", "executor", message, db=db, dedupe_last=True)
 
+    def _post(self, fn, what: str) -> None:
+        """Run a Sender POST without blocking the executor: fire-and-forget on a daemon
+        thread (sender_post_async, default on). Payloads are ALWAYS built on the caller
+        thread first - the thread only performs the HTTP call (httpx.Client is
+        thread-safe). Failures are logged, never raised."""
+        def run() -> None:
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("%s post to sender failed (%s) - continuing", what, exc)
+        if getattr(self.settings, "sender_post_async", True):
+            threading.Thread(target=run, name=f"post-{what}", daemon=True).start()
+        else:
+            run()
+
     def _report(self, action: Action, status: str) -> None:
-        """Execution feedback to the Sender - must never break the worker."""
-        try:
-            self.client.post_reports([{
-                "signal_id": action.signal_id,
-                "revision": action.revision,
-                "account_ref": action.account_ref,
-                "status": status,
-                "resolved_qty": action.qty,
-                "order_ref": action.order_ref,
-                "error": action.note if status in ("failed", "skipped") else None,
-            }])
-        except Exception as exc:  # noqa: BLE001
-            log.warning("report to sender failed (%s) - continuing", exc)
+        """Execution feedback to the Sender - must never break or DELAY the worker.
+        The payload is snapshotted here (caller thread) so the async post never touches
+        the ORM object."""
+        payload = {
+            "signal_id": action.signal_id,
+            "revision": action.revision,
+            "account_ref": action.account_ref,
+            "status": status,
+            "resolved_qty": action.qty,
+            "order_ref": action.order_ref,
+            "error": action.note if status in ("failed", "skipped") else None,
+        }
+        self._post(lambda: self.client.post_reports([payload]), "report")
 
     def _killswitch_state(self, db: Session, account_ref: str) -> bool | None:
         """Fresh-enough kill-switch state. None = unknown (caller must HOLD)."""
@@ -488,7 +503,17 @@ class TerminalWorker(threading.Thread):
 
     # --- idle duties: monitoring + keep-alive ----------------------------------------
 
+    def _queue_has_work(self, db: Session) -> bool:
+        try:
+            return db.scalar(
+                select(Action.id).where(Action.status == "queued").limit(1)) is not None
+        except Exception:  # noqa: BLE001 - a read hiccup must not break the loop
+            return False
+
     def _idle_duties(self, db: Session) -> None:
+        """Monitoring between actions. Each sub-step re-checks the queue and BAILS if a
+        signal arrived, so a fresh action is never stuck behind a monitoring read - at
+        1s cadences this was adding up to ~1.5s to pickup latency."""
         interval = float(self.settings.state_poll_sec or 15)
         if (time.monotonic() - self._last_monitor) >= interval:
             logged_in, login_detail = self.gateway.login_check()
@@ -497,7 +522,11 @@ class TerminalWorker(threading.Thread):
                 self._capture_state(db)
             self._last_monitor = time.monotonic()
             self._set(last_monitor_at=_utcnow().isoformat())
+        if self._queue_has_work(db):
+            return
         self._maybe_report_accounts()   # all-accounts PnL (own cadence; cheap DOM read)
+        if self._queue_has_work(db):
+            return
         self.gateway.keepalive()  # self-throttled; harmless mouse-move + zero scroll
 
     def _maybe_report_accounts(self) -> None:
@@ -517,10 +546,7 @@ class TerminalWorker(threading.Thread):
         if not rows:
             return
         self._set(last_accounts_at=_utcnow().isoformat())
-        try:
-            self.client.post_accounts(rows)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("accounts post to sender failed (%s)", exc)
+        self._post(lambda: self.client.post_accounts(rows), "accounts")
 
     def _capture_state(self, db: Session) -> None:
         try:
@@ -531,14 +557,12 @@ class TerminalWorker(threading.Thread):
             self._set(active_account=state.get("account"))
             account_ref = state.get("account")
             if account_ref:
-                try:
-                    self.client.post_state([{
-                        "account_ref": account_ref,
-                        "positions": state.get("positions") or [],
-                        "working_orders": state.get("working_orders") or [],
-                    }])
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("state post to sender failed (%s)", exc)
+                payload = {
+                    "account_ref": account_ref,
+                    "positions": state.get("positions") or [],
+                    "working_orders": state.get("working_orders") or [],
+                }
+                self._post(lambda: self.client.post_state([payload]), "state")
         except Exception as exc:  # noqa: BLE001
             log.warning("terminal state capture failed: %s", exc)
 

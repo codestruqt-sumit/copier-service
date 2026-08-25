@@ -81,6 +81,7 @@ def worker_settings(**overrides):
         killswitch_ttl_sec=0.0,          # always fetch fresh - deterministic tests
         killswitch_stale_block_sec=60.0,
         state_poll_sec=0.0,              # monitor on every idle step
+        sender_post_async=False,         # tests assert report ordering synchronously
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -450,3 +451,34 @@ def test_timeout_zero_disables_the_deadline(sender_client, session_factory):
     action_id = queue_action(session_factory)
     worker.step()
     assert get_action(session_factory, action_id).status == "done"
+
+
+# --- speed package: idle duties never delay pickup + async posts -------------------------
+
+def test_idle_duties_bail_when_a_signal_arrives(worker, gateway, session_factory):
+    """A queued action must never wait behind the accounts read / keepalive."""
+    queue_action(session_factory)                 # work is waiting
+    db = session_factory()
+    try:
+        worker._idle_duties(db)
+    finally:
+        db.close()
+    assert "read_accounts_summary" not in gateway.calls
+    assert "keepalive" not in gateway.calls       # bailed to let step() pick the action
+
+
+def test_async_posts_flag_defaults_on_and_still_delivers(gateway, sender_client,
+                                                         session_factory, fake_sender):
+    """sender_post_async=True posts on a thread; the report still arrives."""
+    import time as _t
+
+    worker = TerminalWorker(gateway, sender_client, session_factory,
+                            worker_settings(sender_post_async=True))
+    action_id = queue_action(session_factory)
+    worker.step()
+    for _ in range(40):                            # wait out the daemon threads
+        if len(fake_sender.reports) >= 2:
+            break
+        _t.sleep(0.05)
+    assert get_action(session_factory, action_id).status == "done"
+    assert sorted(r["status"] for r in fake_sender.reports) == ["executing", "filled"]

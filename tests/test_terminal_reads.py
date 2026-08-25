@@ -126,3 +126,42 @@ def test_successful_ticket_market_with_invisible_fill_still_verifies():
     g.ticket = FakeTicket(ok=True, submitted=True)
     out = g._market_via_ticket("SIU6", "sell", 1, before=0, expected=-1)
     assert out["outcome"] == "filled"
+
+
+# --- speed package: tab-switch early-exit + live/verified annotation ---------------------
+
+def test_ensure_tab_skips_switch_when_panel_already_on_symbol():
+    g = gateway(FakePositions())
+    g.driver = SimpleNamespace(execute_script=lambda js: "MNQU6")   # panel shows it
+    calls = []
+    g.tabs = SimpleNamespace(switch_to=lambda s: calls.append(s) or SimpleNamespace(ok=True))
+    out = g._ensure_tab("MNQU6")
+    assert out.ok is True and calls == []          # no full switch performed
+
+
+def test_ensure_tab_switches_on_mismatch_or_unknown():
+    g = gateway(FakePositions())
+    g.driver = SimpleNamespace(execute_script=lambda js: "MGCZ6")
+    calls = []
+    g.tabs = SimpleNamespace(
+        switch_to=lambda s: calls.append(s) or SimpleNamespace(ok=True, error=None))
+    assert g._ensure_tab("SIU6").ok is True
+    assert calls == ["SIU6"]                       # mismatch -> real switch
+
+    g.driver = SimpleNamespace(execute_script=lambda js: (_ for _ in ()).throw(RuntimeError()))
+    assert g._ensure_tab("SIU6").ok is True        # read failure -> safe fallback switch
+    assert calls == ["SIU6", "SIU6"]
+
+
+def test_latency_annotation_on_live_results():
+    import time as _t
+
+    g = gateway(FakePositions())
+    t0 = _t.monotonic()
+    g._live_at = t0 + 0.5                          # order went live 0.5s in
+    out = g._annotate_latency({"outcome": "filled", "detail": "net 0 -> 1"}, t0)
+    assert "[live +0.5s, verified +" in out["detail"]
+
+    g._live_at = None                              # nothing went live -> no annotation
+    out2 = g._annotate_latency({"outcome": "failed", "detail": "x"}, t0)
+    assert out2["detail"] == "x"
