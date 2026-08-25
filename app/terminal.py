@@ -471,43 +471,57 @@ class TerminalGateway:
             return {"outcome": "failed", "order_ref": None,
                     "detail": f"set qty failed: {set_qty.error}"}
         fire = self.panel.buy_bid if action["kind"] == "place_bid" else self.panel.sell_ask
-        fired = fire(expect_symbol=symbol, dry_run=False, expect_qty=qty)
-        if not fired.ok:
-            return {"outcome": "failed", "order_ref": None, "detail": fired.error}
-        self._mark_live()
-        # Classify honestly: a joined bid/ask may rest OR fill instantly. The old code
-        # scanned the (visible) Orders grid ONCE with no wait, so a resting order that
-        # had not rendered yet was misreported as "filled on join". Now poll briefly
-        # for EITHER a working order (-> executing) or the net moving (-> verified
-        # fill); claim a fill ONLY when the position actually moved.
-        order_ref = None
-        deadline = time.monotonic() + 4.0
-        while time.monotonic() < deadline:
-            order_ref = self._find_working_ref(symbol)
+
+        # Fire, then classify honestly: a joined bid/ask may rest OR fill instantly.
+        # Poll briefly for EITHER a working order (-> executing) or the net moving
+        # (-> verified fill); claim a fill ONLY when the position actually moved.
+        # SAFE RE-FIRE (2026-08-25): when the first fire PROVABLY landed nothing (net
+        # unchanged via a thorough read AND no working order anywhere in the full grid -
+        # the same proof standard the market path's ticket fallback trusts), the panel
+        # click didn't take (~15% of bid/asks, measured) - one re-fire is safe and turns
+        # a missed mirror into a placed order. Never re-fire when anything is ambiguous.
+        after = before
+        for attempt in (1, 2):
+            if attempt == 2:
+                self._checkpoint()
+                log.info("bid/ask %s %s: provably nothing landed - one safe re-fire",
+                         side, symbol)
+                time.sleep(1.0)
+            fired = fire(expect_symbol=symbol, dry_run=False, expect_qty=qty)
+            if not fired.ok:
+                return {"outcome": "failed", "order_ref": None, "detail": fired.error}
+            self._mark_live()
+            order_ref = None
+            deadline = time.monotonic() + float(getattr(self, "classify_wait_sec", 4.0))
+            while time.monotonic() < deadline:
+                order_ref = self._find_working_ref(symbol)
+                if order_ref:
+                    break
+                if self._net(symbol) == expected:
+                    break
+                self._checkpoint()
+                time.sleep(0.4)
+            after = self._net_thorough(symbol)   # the verdict must see off-screen rows
+            if not order_ref and after != expected:
+                # neither fill nor VISIBLE order: the grid appends new rows at the
+                # bottom, so a fresh rest may be below the fold - a scrolled read decides.
+                order_ref = self._find_working_thorough(symbol)
+            log.info("bid/ask classify %s %s (attempt %d): net %s->%s (expected %s), "
+                     "working_ref=%s", side, symbol, attempt, before, after, expected,
+                     order_ref)
+            retried = " (after safe re-fire)" if attempt == 2 else ""
             if order_ref:
-                break
-            if self._net(symbol) == expected:
-                break
-            self._checkpoint()
-            time.sleep(0.4)
-        after = self._net_thorough(symbol)   # the verdict must see off-screen rows
-        if not order_ref and after != expected:
-            # neither fill nor VISIBLE order: the grid appends new rows at the bottom, so
-            # a fresh resting order may be below the fold - one scrolled read decides.
-            order_ref = self._find_working_thorough(symbol)
-        log.info("bid/ask classify %s %s: net %s->%s (expected %s), working_ref=%s",
-                 side, symbol, before, after, expected, order_ref)
-        if order_ref:
-            return {"outcome": "executing", "order_ref": order_ref,
-                    "detail": "joined the book, order working"}
-        if after == expected:
-            return {"outcome": "filled", "order_ref": None,
-                    "detail": f"filled on join (net verified {before} -> {after})"}
-        # Sent, but neither a fill nor a visible working order yet - report honestly
-        # instead of claiming a fill; monitoring/state will show what it became.
+                return {"outcome": "executing", "order_ref": order_ref,
+                        "detail": f"joined the book, order working{retried}"}
+            if after == expected:
+                return {"outcome": "filled", "order_ref": None,
+                        "detail": f"filled on join (net verified {before} -> {after})"
+                                  f"{retried}"}
+        # Two provably-empty fires - report honestly; monitoring shows what it became.
         return {"outcome": "executing", "order_ref": None,
-                "detail": f"sent - fill/working order not visible yet (net {before} -> "
-                          f"{after}, expected {expected}); verify on the terminal"}
+                "detail": f"sent twice - fill/working order not visible either time "
+                          f"(net {before} -> {after}, expected {expected}); verify on "
+                          f"the terminal"}
 
     def _resting(self, action: dict) -> dict:
         order_type = "LIMIT" if action["kind"] == "place_limit" else "STOP"

@@ -197,3 +197,75 @@ def test_working_order_visible_needs_no_scroll():
     g.orders = FakeOrders(visible=[{"id": "42", "contract": "SIU6 ..."}])
     assert g._find_working_thorough("SIU6") == "42"
     assert g.orders.scroll_reads == 0
+
+
+# --- bid/ask safe re-fire: retry ONLY when provably nothing landed -----------------------
+
+class FakeFirePanel:
+    """buy_bid/sell_ask stub: the click 'takes' only on `lands_on` attempt (None = never),
+    landing either a FILL (mutates positions) or a RESTING order (mutates orders)."""
+
+    def __init__(self, positions, orders, symbol, lands_on=None, mode="fill", net=1):
+        self.positions, self.orders = positions, orders
+        self.symbol, self.lands_on, self.mode, self.net = symbol, lands_on, mode, net
+        self.fires = 0
+
+    def set_qty(self, q):
+        return SimpleNamespace(ok=True, error=None, meta={})
+
+    def _fire(self, **k):
+        self.fires += 1
+        if self.lands_on is not None and self.fires >= self.lands_on:
+            if self.mode == "fill":
+                self.positions.visible[self.symbol] = self.net
+                self.positions.full[self.symbol] = self.net
+            else:  # resting order below the fold (visible scan misses it)
+                self.orders.full.append({"id": "777", "contract": f"{self.symbol} ..."})
+        return SimpleNamespace(ok=True, error=None, data={"confirmation": "x"}, meta={})
+
+    buy_bid = _fire
+    sell_ask = _fire
+
+
+def bid_gateway(symbol="SIU6", lands_on=None, mode="fill", net=1):
+    pos = FakePositions()
+    orders = FakeOrders()
+    g = gateway(pos)
+    g.orders = orders
+    g.driver = SimpleNamespace(execute_script=lambda js: symbol)  # _ensure_tab skips
+    g.panel = FakeFirePanel(pos, orders, symbol, lands_on=lands_on, mode=mode, net=net)
+    g.classify_wait_sec = 0.2                   # keep the classify polls fast in tests
+    return g
+
+
+def test_bid_refire_recovers_a_missed_click():
+    """First fire lands nothing (provably); the safe re-fire lands the fill."""
+    g = bid_gateway(lands_on=2, mode="fill", net=1)
+    out = g._bid_ask({"kind": "place_bid", "symbol": "SIU6", "qty": 1})
+    assert g.panel.fires == 2
+    assert out["outcome"] == "filled"
+    assert "safe re-fire" in out["detail"]
+
+
+def test_bid_no_refire_when_first_fire_fills():
+    g = bid_gateway(lands_on=1, mode="fill", net=1)
+    out = g._bid_ask({"kind": "place_bid", "symbol": "SIU6", "qty": 1})
+    assert g.panel.fires == 1                   # anything landed -> never re-fire
+    assert out["outcome"] == "filled" and "re-fire" not in out["detail"]
+
+
+def test_bid_no_refire_when_order_rests_below_fold():
+    """A rest below the Orders fold is FOUND by the thorough read -> executing+ref,
+    and crucially NO second fire (that would double the order)."""
+    g = bid_gateway(lands_on=1, mode="rest")
+    out = g._bid_ask({"kind": "place_bid", "symbol": "SIU6", "qty": 1})
+    assert g.panel.fires == 1
+    assert out["outcome"] == "executing" and out["order_ref"] == "777"
+
+
+def test_bid_two_empty_fires_report_honestly():
+    g = bid_gateway(lands_on=None)              # the click never takes
+    out = g._bid_ask({"kind": "place_ask", "symbol": "SIU6", "qty": 1})
+    assert g.panel.fires == 2
+    assert out["outcome"] == "executing"
+    assert "sent twice" in out["detail"]
