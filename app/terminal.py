@@ -491,6 +491,10 @@ class TerminalGateway:
             self._checkpoint()
             time.sleep(0.4)
         after = self._net_thorough(symbol)   # the verdict must see off-screen rows
+        if not order_ref and after != expected:
+            # neither fill nor VISIBLE order: the grid appends new rows at the bottom, so
+            # a fresh resting order may be below the fold - one scrolled read decides.
+            order_ref = self._find_working_thorough(symbol)
         log.info("bid/ask classify %s %s: net %s->%s (expected %s), working_ref=%s",
                  side, symbol, before, after, expected, order_ref)
         if order_ref:
@@ -647,6 +651,13 @@ class TerminalGateway:
         detail = f"Exit at Mkt & Cxl - {symbol} flat (net verified)"
         if left:
             detail += f"; {left} order(s) still resting"
+        else:
+            # A resting order BELOW the Orders fold can survive Exit&Cxl invisibly and
+            # fill later (happened live). One scrolled read; warn loudly if found.
+            survivor = self._find_working_thorough(symbol)
+            if survivor:
+                detail += (f"; WARNING: resting order {survivor} SURVIVED the exit - "
+                           f"cancel it manually on the terminal")
         return {"outcome": "filled", "order_ref": None, "detail": detail}
 
     def _flatten_all(self, action: dict) -> dict:
@@ -708,6 +719,30 @@ class TerminalGateway:
             for row in self._working_fast():
                 if symbol in (row.get("contract") or "") or symbol in (row.get("row_text") or ""):
                     return str(row.get("id") or "") or None
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    def _find_working_thorough(self, symbol: str) -> Optional[str]:
+        """Visible scan first; if nothing, ONE scrolled Orders read. The grid appends new
+        rows at the bottom, so after a long session a fresh resting order sits BELOW the
+        fold and the visible scan misses it (proven live: a rested bid survived its exit
+        invisible and filled later). The scrolled read is the slow path - use only at
+        decision points, never in polls."""
+        ref = self._find_working_ref(symbol)
+        if ref:
+            return ref
+        try:
+            report = self.orders.report(scroll=True)
+            if not report.ok:
+                return None
+            for row in (report.data or {}).get("working", []):
+                if symbol in (row.get("contract") or "") or symbol in (row.get("row_text") or ""):
+                    found = str(row.get("id") or "") or None
+                    if found:
+                        log.info("working order %s for %s was OFF-SCREEN - visible scan "
+                                 "missed it", found, symbol)
+                    return found
         except Exception:  # noqa: BLE001
             return None
         return None

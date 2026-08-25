@@ -165,3 +165,35 @@ def test_latency_annotation_on_live_results():
     g._live_at = None                              # nothing went live -> no annotation
     out2 = g._annotate_latency({"outcome": "failed", "detail": "x"}, t0)
     assert out2["detail"] == "x"
+
+
+# --- orders grid: a fresh resting order below the fold must still be found --------------
+
+class FakeOrders:
+    """report(scroll=False) = visible working rows; scroll=True = the full grid."""
+
+    def __init__(self, visible=None, full=None):
+        self.visible = visible or []
+        self.full = (full or []) + self.visible
+        self.scroll_reads = 0
+
+    def report(self, scroll=True):
+        if scroll:
+            self.scroll_reads += 1
+        rows = self.full if scroll else self.visible
+        return SimpleNamespace(ok=True, data={"working": rows})
+
+
+def test_working_order_below_fold_found_by_thorough_read():
+    g = gateway(FakePositions())
+    g.orders = FakeOrders(visible=[], full=[{"id": "999111", "contract": "MGCZ6 ..."}])
+    assert g._find_working_ref("MGCZ6") is None            # the old visible-only miss
+    assert g._find_working_thorough("MGCZ6") == "999111"   # scrolled read finds it
+    assert g.orders.scroll_reads == 1
+
+
+def test_working_order_visible_needs_no_scroll():
+    g = gateway(FakePositions())
+    g.orders = FakeOrders(visible=[{"id": "42", "contract": "SIU6 ..."}])
+    assert g._find_working_thorough("SIU6") == "42"
+    assert g.orders.scroll_reads == 0

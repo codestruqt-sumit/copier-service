@@ -522,6 +522,11 @@ class TerminalWorker(threading.Thread):
                 self._capture_state(db)
             self._last_monitor = time.monotonic()
             self._set(last_monitor_at=_utcnow().isoformat())
+            # STAGGER (2026-08-25): never run both heavy DOM reads (state + accounts) in
+            # one pass - back-to-back reads at 1s cadences kept the SPA busy enough to
+            # slow order clicks (+5s per action, measured). The accounts read runs on the
+            # next pass, ~exec_idle_sec later.
+            return
         if self._queue_has_work(db):
             return
         self._maybe_report_accounts()   # all-accounts PnL (own cadence; cheap DOM read)

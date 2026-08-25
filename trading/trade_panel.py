@@ -144,13 +144,22 @@ class ChartTradePanel(TerminalModule):
         Raises (after cancelling) if the dialog text contradicts our intent.
         """
         import time
+        # ADAPTIVE POLL (2026-08-25): the confirmation dialog is a TERMINAL setting -
+        # when the user has suppressed it ('don't show again'), every order was burning
+        # the full poll (~6-10s, elastic under load) waiting for a dialog that never
+        # comes. Remember whether the last fire saw one: suppressed -> short poll; the
+        # moment a popover IS seen again -> back to the full poll. Missing a slow popover
+        # is safe: the order simply doesn't go out and the caller's net-verify reports
+        # 'nothing landed' -> ticket fallback.
+        rounds = 10 if getattr(self, "_confirm_seen", True) else 3
         popover = None
-        for _ in range(10):                      # poll up to ~3s; it can lag
+        for _ in range(rounds):
             popover = actions.find(self.driver, locators.ORDER_CONFIRM_POPOVER,
                                    timeout=0.4, visible_only=True)
             if popover is not None:
                 break
             time.sleep(0.25)
+        self._confirm_seen = popover is not None
         if popover is None:
             return "no confirmation shown (suppressed or instant)"
 

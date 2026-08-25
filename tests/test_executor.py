@@ -246,11 +246,16 @@ def test_actions_execute_serially_in_fifo_order(worker, gateway, fake_sender, se
 
 
 def test_idle_monitoring_and_keepalive(worker, gateway, fake_sender, session_factory):
-    assert worker.step() == "idle"            # empty queue
+    assert worker.step() == "idle"            # monitor pass (staggered: returns early)
     assert "read_state" in gateway.calls
-    assert "keepalive" in gateway.calls
     assert fake_sender.states and fake_sender.states[0]["account_ref"] == "REF1"
     assert worker.health()["last_monitor_at"] is not None
+    # STAGGERED idle duties: accounts/keepalive run on a pass where the monitor is not
+    # due (never both heavy DOM reads in one pass).
+    assert "keepalive" not in gateway.calls
+    worker.settings.state_poll_sec = 999.0    # monitor no longer due
+    assert worker.step() == "idle"
+    assert "keepalive" in gateway.calls
 
 
 # --- crash recovery -----------------------------------------------------------------------
