@@ -426,9 +426,12 @@ class TerminalWorker(threading.Thread):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
     def _action_dict(self, action: Action) -> dict:
+        # account_ref/alias are additive: web mode switches the account separately and
+        # ignores them; API mode needs them (accountSpec/accountId travel on each order).
         return {"kind": action.kind, "symbol": action.symbol, "side": action.side,
                 "qty": action.qty, "limit_price": action.limit_price,
-                "stop_price": action.stop_price, "tif": action.tif}
+                "stop_price": action.stop_price, "tif": action.tif,
+                "account_ref": action.account_ref, "account_alias": action.account_alias}
 
     def _finish(self, db: Session, action: Action, status: str, note: str,
                 *, sender_status: str, fill_like: bool = False) -> str:

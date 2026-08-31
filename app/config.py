@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,34 @@ class Settings(BaseSettings):
     copier_name: str = "copier-1"
     sender_base_url: str = "http://localhost:8000"
     copier_key: str = ""
+
+    # Execution mode: "web" (Selenium browser automation, shipping) or "api"
+    # (Tradovate REST + WebSocket, to be implemented). Picks which gateway boots.
+    copier_mode: str = "web"
+    # API-mode auth model (only read when copier_mode="api"): "oauth" | "credentials".
+    tradovate_auth: str = "oauth"
+    # API-mode OAuth is PER-VM and LOCAL: this copier hosts its own callback on its
+    # own local dashboard, so the user OAuths inside the VM and the token is caught +
+    # stored HERE. client id/secret live only in this VM's gitignored .env, never in
+    # code. Leave the redirect empty to derive it dynamically from the local dashboard
+    # host/port (an identical loopback string on every VM -> one registered redirect
+    # covers them all); set it only to override for a VM reached by a real hostname.
+    tradovate_base: str = "https://demo.tradovateapi.com/v1"
+    tradovate_oauth_authorize: str = "https://trader.tradovate.com/oauth"
+    tradovate_client_id: str = ""
+    tradovate_client_secret: SecretStr = SecretStr("")
+    tradovate_redirect_uri: str = ""
+    # API mode via DIRECT credentials (TRADOVATE_AUTH=credentials) - headless, per-VM,
+    # the user's OWN Tradovate login + API key (cid/sec) in THIS VM's .env. No OAuth,
+    # no redirect. Token is minted at boot via /auth/accesstokenrequest and RENEWED
+    # before expiry (never re-minted on a schedule - p-captcha + 2-session risk).
+    # Field names mirror the tested tradovate_place_order.sh (name/password/cid/sec).
+    tradovate_name: str = ""
+    tradovate_password: SecretStr = SecretStr("")
+    tradovate_cid: str = ""
+    tradovate_sec: SecretStr = SecretStr("")
+    tradovate_app_id: str = "CopierM46"
+    tradovate_app_version: str = "1.0"
 
     # Local dashboard.
     dashboard_host: str = "0.0.0.0"
@@ -126,6 +155,16 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return Path(self.data_dir) / "copier.db"
+
+    @property
+    def oauth_redirect_uri(self) -> str:
+        """The OAuth callback for THIS copier. Explicit override wins; otherwise the
+        local dashboard loopback - same string on every VM, so one registered
+        redirect_uri works everywhere. The user's OAuth login runs in a browser
+        inside the VM, so localhost is reachable."""
+        if self.tradovate_redirect_uri:
+            return self.tradovate_redirect_uri
+        return f"http://localhost:{self.dashboard_port}/oauth/tradovate/callback"
 
 
 settings = Settings()

@@ -16,12 +16,13 @@ from fastapi import FastAPI
 
 from app.config import settings
 from app.dashboard import router as dashboard_router
+from app.oauth_routes import router as oauth_router
 from app.db import init_db, make_engine, make_session_factory
 from app.executor import TerminalWorker
 from app.poller import Poller
 from app.sender_client import SenderClient
 from app.telegram import notifier as telegram
-from app.terminal import TerminalGateway
+from app.gateways import build_gateway
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -59,8 +60,7 @@ def create_app(*, start_poller: bool = True, http_client=None) -> FastAPI:
     if telegram.enabled:
         log.info("telegram alerts enabled")
     worker = TerminalWorker(
-        TerminalGateway(fast_market=settings.market_fast_path,
-                        net_verify_sec=settings.net_verify_sec),
+        build_gateway(settings, session_factory),
         client, session_factory, settings, notifier=telegram)
     # the poller reports the executor's terminal health on every heartbeat
     poller = Poller(client, session_factory, settings, health_provider=worker.health,
@@ -91,6 +91,7 @@ def create_app(*, start_poller: bool = True, http_client=None) -> FastAPI:
     app.state.worker = worker
     app.state.sender_client = client
     app.include_router(dashboard_router)
+    app.include_router(oauth_router)
     return app
 
 
