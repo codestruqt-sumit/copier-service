@@ -218,6 +218,25 @@
     var texec=document.getElementById('term_exec');
     var hint=document.getElementById('term_hint');
 
+    if(d.mode==='api'){
+      // API mode: no browser terminal exists. The 'connection' is the Tradovate API
+      // token; browser controls are hidden and the status pills speak API language.
+      if(btn) btn.style.display='none';
+      var lb0=document.getElementById('login_banner');
+      if(ex.enabled && !ex.connected){ lb0.classList.add('show');
+        document.getElementById('lb_txt').textContent='API CONNECTION NEEDED';
+        document.getElementById('lb_sub').textContent=(ex.detail||'Not connected to the Tradovate API')+' — manage the connection at /oauth/tradovate.';
+        document.title='🔐 API — Copier · '+(d.copier_name||'');
+      } else { lb0.classList.remove('show'); document.title='Copier · '+(d.copier_name||''); }
+      if(!ex.enabled){ ts.className='pill warn'; ts.textContent='API MODE · EXECUTOR OFF'; }
+      else if(ex.connected){ ts.className='pill ok'; ts.textContent='API CONNECTED'; }
+      else { ts.className='pill bad'; ts.textContent='API NOT CONNECTED'; }
+      if(!ex.enabled){ texec.innerHTML='<b style="color:var(--warn)">Executor is OFF</b> — signals queue but are <b>not placed</b>. Set <span class="mono">EXECUTOR_ENABLED=true</span> and restart.'; }
+      else if(ex.connected){ texec.innerHTML='<b style="color:var(--ok)">Executor ON</b> — trading via the Tradovate API.'; }
+      else { texec.innerHTML='<b style="color:var(--bad)">Executor ON</b> — '+(ex.detail||'not connected')+' · <a href="/oauth/tradovate">manage connection</a>'; }
+      if(hint) hint.textContent='API mode: no browser terminal is used. Manage the connection + mode at /oauth/tradovate.';
+    } else {
+
     // Prominent login/terminal warning banner — only while the executor is armed AND
     // something the operator must fix is blocking trading. Also flashes the browser tab
     // title so a background tab shows it too.
@@ -257,6 +276,7 @@
       texec.innerHTML='<b style="color:var(--bad)">Executor ON</b> — attached, but you are <b>not logged in</b>. Log in to Tradovate in the tab.';
     } else {
       texec.innerHTML='<b style="color:var(--ok)">Executor ON</b> — attached and driving this terminal.';
+    }
     }
     if(ex.last_refresh_at){
       texec.innerHTML += ' <span class="muted">· tab refreshed '+esc(ago(ex.last_refresh_at))+'</span>';

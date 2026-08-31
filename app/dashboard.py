@@ -61,10 +61,17 @@ def index() -> HTMLResponse:
     return HTMLResponse(_TEMPLATE.read_text(encoding="utf-8"))
 
 
+def _api_mode(request: Request) -> bool:
+    return getattr(request.app.state, "active_mode", "web") == "api"
+
+
 @router.post("/api/terminal/launch")
-def terminal_launch() -> dict:
+def terminal_launch(request: Request) -> dict:
     """Start the Tradovate debug browser so the user can log in (then the executor
     attaches). The copier never handles credentials - this only opens the window."""
+    if _api_mode(request):
+        return {"ok": False, "detail": "API mode: no browser to launch - the connection "
+                                       "is the Tradovate API token (see /oauth/tradovate)"}
     try:
         from app.launcher import launch_terminal
     except Exception as exc:  # noqa: BLE001 - bot modules/selenium absent
@@ -80,6 +87,10 @@ def terminal_selftest(request: Request) -> dict:
     is already attached - in that case tab access is already proven live."""
     worker = getattr(request.app.state, "worker", None)
     health = worker.health() if worker else {}
+    if _api_mode(request):
+        return {"ok": bool(health.get("connected")), "via": "api",
+                "detail": "API mode: no browser tab - connection state is shown above "
+                          "(token-based; manage it on /oauth/tradovate)"}
     if health.get("connected"):
         return {
             "ok": True,
@@ -183,6 +194,7 @@ def overview(request: Request) -> dict:
         "copier_name": settings.copier_name,
         "sender_base_url": settings.sender_base_url,
         "health": poller.health() if poller else {},
+        "mode": getattr(request.app.state, "active_mode", "web"),
         "executor": worker.health() if worker else {"enabled": False, "detail": "no worker"},
         "terminal": terminal_state,
         "terminal_browser": terminal_browser,

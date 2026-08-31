@@ -71,8 +71,9 @@ def access_token_request(settings) -> dict:
     except Exception as exc:  # noqa: BLE001
         raise CredError(f"accesstokenrequest failed: {type(exc).__name__}: {exc}") from exc
     _penalty_guard(body)
+    rec = _normalise(body)          # raises CredError on errorText / missing token
     log.info("credentials: minted access token via accesstokenrequest")
-    return _normalise(body)
+    return rec
 
 
 def renew_access_token(settings, access_token: str) -> dict:

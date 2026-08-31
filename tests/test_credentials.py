@@ -83,3 +83,45 @@ def test_penalty_guard_raises():
     with pytest.raises(credentials.CredError):
         credentials._penalty_guard({"p-ticket": "abc", "p-time": 60})
     credentials._penalty_guard({})                 # clean -> no raise
+
+
+def test_bad_password_latches_no_hammering(monkeypatch):
+    """'Incorrect username or password' must attempt ONCE and then latch (never re-mint
+    every executor tick - accesstokenrequest is Tradovate's penalty-guarded endpoint)."""
+    calls = {"mint": 0}
+    def bad_mint(s):
+        calls["mint"] += 1
+        raise credentials.CredError("Incorrect username or password. Please try again")
+    monkeypatch.setattr(credentials, "access_token_request", bad_mint)
+    db = _db()
+    gw = TradovateGateway(_settings("credentials"), lambda: db)
+    ok1, d1 = gw.ensure_connected()
+    ok2, d2 = gw.ensure_connected()
+    ok3, d3 = gw.ensure_connected()
+    assert (ok1, ok2, ok3) == (False, False, False)
+    assert calls["mint"] == 1                       # exactly ONE attempt, then latched
+    assert "AUTH LATCHED" in d3 and ".env" in d3 and "RESTART" in d3
+
+
+def test_transient_auth_failure_cools_down(monkeypatch):
+    calls = {"mint": 0}
+    def flaky(s):
+        calls["mint"] += 1
+        raise credentials.CredError("accesstokenrequest failed: ConnectTimeout")
+    monkeypatch.setattr(credentials, "access_token_request", flaky)
+    db = _db()
+    gw = TradovateGateway(_settings("credentials"), lambda: db)
+    gw.ensure_connected()
+    gw.ensure_connected()
+    assert calls["mint"] == 1                       # cooldown holds between ticks
+    assert "retry in 2m" in gw._auth_block_reason
+
+
+def test_penalty_blocks_an_hour(monkeypatch):
+    def penalized(s):
+        raise credentials.CredError("auth time penalty: retry in 60s (p-ticket) - NOT retried")
+    monkeypatch.setattr(credentials, "access_token_request", penalized)
+    db = _db()
+    gw = TradovateGateway(_settings("credentials"), lambda: db)
+    ok, detail = gw.ensure_connected()
+    assert ok is False and "blocked 1h" in detail

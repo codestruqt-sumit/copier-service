@@ -52,6 +52,12 @@ class TradovateGateway:
         # verify windows (mirror web's net_verify_sec; own knobs are fine defaults)
         self._net_verify_sec = float(getattr(settings, "net_verify_sec", 12.0) or 12.0)
         self._resting_verify_sec = 4.0
+        # Auth-failure latch: accesstokenrequest is Tradovate's penalty-guarded endpoint
+        # (p-captcha ~1h lockout). NEVER hammer it: on failure we block re-attempts -
+        # bad credentials latch until RESTART (fixing .env needs one anyway); transient
+        # errors cool down; a p-ticket/p-captcha penalty blocks for an hour.
+        self._auth_block_until: float = 0.0
+        self._auth_block_reason: Optional[str] = None
         log.info("TradovateGateway ready (auth=%s, base=%s)",
                  getattr(settings, "tradovate_auth", "oauth"),
                  getattr(settings, "tradovate_base", "?"))
@@ -73,11 +79,15 @@ class TradovateGateway:
             if rec is None:
                 # credentials mode is HEADLESS: mint now. oauth mode needs the user flow.
                 if self._auth_mode == "credentials":
+                    if time.monotonic() < self._auth_block_until:
+                        return None, self._auth_block_reason or "auth blocked - see log"
                     try:
                         rec = token_store.save_token(db, credentials.access_token_request(self.settings))
+                        self._auth_block_until = 0.0
+                        self._auth_block_reason = None
                         return rec["access_token"], "connected"
                     except credentials.CredError as exc:
-                        return None, f"credential auth failed: {exc}"
+                        return None, self._block_auth(exc)
                 return None, _NOT_CONNECTED
             if token_store.refresh_expired(rec):     # only oauth carries a refresh expiry
                 return None, "the Tradovate connection expired - reconnect via /oauth/tradovate"
@@ -89,6 +99,25 @@ class TradovateGateway:
         finally:
             db.close()
 
+    def _block_auth(self, exc) -> str:
+        """Classify the auth failure and set the re-attempt block. Returns the detail the
+        executor holds with (shown on the dashboard + Telegram)."""
+        msg = str(exc)
+        low = msg.lower()
+        if "incorrect username or password" in low or "p-captcha" in low:
+            self._auth_block_until = time.monotonic() + 10 ** 9   # latched until restart
+            self._auth_block_reason = ("AUTH LATCHED: " + msg +
+                                       " - fix TRADOVATE_NAME/PASSWORD/CID/SEC in .env "
+                                       "(quote values containing # or !) and RESTART")
+        elif "p-ticket" in low:
+            self._auth_block_until = time.monotonic() + 3600.0
+            self._auth_block_reason = f"auth penalty - blocked 1h: {msg}"
+        else:
+            self._auth_block_until = time.monotonic() + 120.0
+            self._auth_block_reason = f"auth failed (retry in 2m): {msg}"
+        log.error("credential auth blocked: %s", self._auth_block_reason)
+        return self._auth_block_reason
+
     def _refresh(self, db, rec):
         """Extend the session before expiry. credentials -> renewaccesstoken (fallback: re-
         mint); oauth -> refresh_token. Returns (rec, error)."""
@@ -97,10 +126,12 @@ class TradovateGateway:
                 fresh = credentials.renew_access_token(self.settings, rec["access_token"])
                 return token_store.save_token(db, fresh), None
             except credentials.CredError:
-                try:   # renew failed - mint fresh (headless, safe)
+                if time.monotonic() < self._auth_block_until:
+                    return None, self._auth_block_reason or "auth blocked"
+                try:   # renew failed - mint fresh (respecting the latch)
                     return token_store.save_token(db, credentials.access_token_request(self.settings)), None
                 except credentials.CredError as exc:
-                    return None, f"credential renew/mint failed: {exc}"
+                    return None, self._block_auth(exc)
         refresh_tok = rec.get("refresh_token")
         if not refresh_tok:
             return None, "access token expired and no refresh token - reconnect via /oauth/tradovate"
