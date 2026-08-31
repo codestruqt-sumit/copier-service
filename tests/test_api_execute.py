@@ -30,6 +30,15 @@ class FakeRest:
     def account_list(self):
         return [{"id": 111, "name": "ACC1"}]
 
+    def account_find(self, name):
+        return {"id": 111, "name": name} if name == "ACC1" else None
+
+    def position_deps(self, account_id):
+        return [p for p in self.position_list() if p.get("accountId") == account_id]
+
+    def order_deps(self, account_id):
+        return [o for o in self.order_list() if o.get("accountId") == account_id]
+
     def contract_find(self, symbol):
         return {"id": 4399654, "name": symbol}
 

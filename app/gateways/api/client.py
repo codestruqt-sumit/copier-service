@@ -63,6 +63,19 @@ class RestClient:
     def account_list(self) -> list[dict]:
         return self._get("/account/list") or []
 
+    def account_find(self, name: str) -> dict | None:
+        """O(1) lookup by account name - avoids scanning /account/list (which under a
+        broad credential can be enormous and may silently truncate)."""
+        return self._get(f"/account/find?name={name}")
+
+    def position_deps(self, account_id) -> list[dict]:
+        """Positions for ONE account (/ldeps?masterids=) - never the whole book."""
+        return self._get(f"/position/ldeps?masterids={account_id}") or []
+
+    def order_deps(self, account_id) -> list[dict]:
+        """Orders for ONE account - never the whole book."""
+        return self._get(f"/order/ldeps?masterids={account_id}") or []
+
     def contract_find(self, symbol: str) -> dict | None:
         return self._get(f"/contract/find?name={symbol}")
 

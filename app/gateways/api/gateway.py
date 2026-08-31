@@ -128,6 +128,15 @@ class TradovateGateway:
     def _account_id(self, rest, name: str) -> Optional[int]:
         if name in self._acct_cache:
             return self._acct_cache[name]
+        # O(1) by-name lookup first; list-scan only as a fallback (a broad credential's
+        # /account/list can be enormous and may silently truncate).
+        try:
+            found = rest.account_find(name)
+            if found and found.get("id") is not None:
+                self._acct_cache[name] = found["id"]
+                return found["id"]
+        except TradovateAPIError:
+            pass
         for a in rest.account_list():
             if a.get("name"):
                 self._acct_cache[a["name"]] = a.get("id")
@@ -145,7 +154,7 @@ class TradovateGateway:
     # --- verification reads ---------------------------------------------------------
     def _net(self, rest, account_id: int, contract_id: int) -> int:
         net = 0
-        for p in rest.position_list():
+        for p in rest.position_deps(account_id):   # ONE account's positions, never the book
             if p.get("accountId") == account_id and p.get("contractId") == contract_id:
                 net += int(p.get("netPos") or 0)
         return net
@@ -163,7 +172,7 @@ class TradovateGateway:
 
     def _working_orders(self, rest, account_id, contract_id) -> list:
         out = []
-        for o in rest.order_list():
+        for o in rest.order_deps(account_id):      # ONE account's orders, never the book
             if (o.get("accountId") == account_id and o.get("contractId") == contract_id
                     and o.get("ordStatus") == "Working"):
                 out.append(o.get("id"))
@@ -363,7 +372,7 @@ class TradovateGateway:
 
     def _flatten_all(self, rest, name, account_id, action):
         # Flatten every open position on this account.
-        rows = [p for p in rest.position_list()
+        rows = [p for p in rest.position_deps(account_id)
                 if p.get("accountId") == account_id and int(p.get("netPos") or 0) != 0]
         if not rows:
             return {"outcome": "filled", "order_ref": None, "detail": "already flat (net verified)"}
