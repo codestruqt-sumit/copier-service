@@ -37,15 +37,29 @@ def _session_factory(request: Request):
     return request.app.state.session_factory
 
 
+def _secret_val(v) -> str:
+    return v.get_secret_value() if hasattr(v, "get_secret_value") else str(v or "")
+
+
+def _auth_mode(settings) -> str:
+    return str(getattr(settings, "tradovate_auth", "oauth") or "oauth").strip().lower()
+
+
 def _configured(settings) -> bool:
-    sec = settings.tradovate_client_secret
-    secret = sec.get_secret_value() if hasattr(sec, "get_secret_value") else str(sec or "")
-    return bool(settings.tradovate_client_id and secret)
+    """Mode-aware: what 'configured' means depends on the auth model."""
+    if _auth_mode(settings) == "credentials":
+        return bool(getattr(settings, "tradovate_name", "")
+                    and _secret_val(getattr(settings, "tradovate_password", ""))
+                    and getattr(settings, "tradovate_cid", "")
+                    and _secret_val(getattr(settings, "tradovate_sec", "")))
+    return bool(settings.tradovate_client_id and _secret_val(settings.tradovate_client_secret))
 
 
 @router.get("/start")
 def start(request: Request):
     settings = _settings(request)
+    if _auth_mode(settings) == "credentials":
+        return RedirectResponse(url="/oauth/tradovate?err=credentials_mode", status_code=303)
     if not _configured(settings):
         return RedirectResponse(url="/oauth/tradovate?err=not_configured", status_code=303)
     state = secrets.token_urlsafe(24)
@@ -108,6 +122,7 @@ def status_json(request: Request):
     out = {
         "mode": getattr(request.app.state, "active_mode", None)
                 or (getattr(settings, "copier_mode", "web") or "web").strip().lower(),
+        "auth": _auth_mode(settings),
         "configured": _configured(settings),
         "redirect_uri": settings.oauth_redirect_uri,
         "base": settings.tradovate_base,
@@ -197,6 +212,7 @@ _PAGE = """<!doctype html>
 
   <div class="card">
     <div class="row"><span class="k">Execution mode</span><span class="v" id="mode">…</span></div>
+    <div class="row"><span class="k">Auth model</span><span class="v" id="auth">…</span></div>
 
     <div class="row"><span class="k">Connection</span><span class="v" id="conn">…</span></div>
     <div class="row"><span class="k">Token expires</span><span class="v" id="exp">…</span></div>
@@ -225,6 +241,7 @@ _PAGE = """<!doctype html>
 
 <script>
 const ERR = {
+  credentials_mode: "This copier uses TRADOVATE_AUTH=credentials — it connects AUTOMATICALLY at startup with the .env credentials. There is no OAuth login to start; the connection state is shown below.",
   not_configured: "OAuth is not configured. Set TRADOVATE_CLIENT_ID and TRADOVATE_CLIENT_SECRET in this VM's .env, then restart.",
   no_code: "Tradovate did not return an authorization code.",
   state_mismatch: "Security check failed (state mismatch). Try connecting again.",
@@ -245,10 +262,15 @@ async function refresh(){
     const c = document.getElementById('conn');
     c.innerHTML = s.connected ? '<span class="pill ok">connected</span>'
                               : '<span class="pill bad">not connected</span> <span class="muted">'+(s.detail||'')+'</span>';
+    document.getElementById('auth').textContent = s.auth==='credentials'
+      ? 'credentials (.env) — connects automatically'
+      : 'oauth — user login via Connect button';
     document.getElementById('exp').textContent = fmt(s.expires_at);
     document.getElementById('redir').textContent = s.redirect_uri;
     document.getElementById('base').textContent = s.base;
-    document.getElementById('connectBtn').textContent = s.connected ? 'Reconnect' : 'Connect Tradovate';
+    var cb = document.getElementById('connectBtn');
+    if (s.auth === 'credentials') { cb.style.display='none'; }
+    else { cb.textContent = s.connected ? 'Reconnect' : 'Connect Tradovate'; }
     const tb = document.getElementById('accts'); const note = document.getElementById('acctNote');
     if (s.accounts_error){ note.textContent = s.accounts_error; }
     if (s.accounts && s.accounts.length){
