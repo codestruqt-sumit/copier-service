@@ -59,12 +59,18 @@ an order we cannot prove is safe to send.**
 
 ## 2. Execution modes and the segregation guarantee
 
-A single setting picks the mode at boot:
+The mode is picked **at boot**, from two places (dashboard choice wins):
 
 ```
-COPIER_MODE = web    # (default) Selenium browser automation — SHIPPING
-COPIER_MODE = api    # Tradovate REST + WebSocket — TO BE IMPLEMENTED
+COPIER_MODE = web|api        # .env default (web if unset)
+UI: /oauth/tradovate         # "Switch mode" buttons -> stored in the local DB
+                             #  (KV copier_mode_override) -> APPLIED ON RESTART
 ```
+
+A mode change is deliberately restart-applied: the gateway is constructed once at boot, so
+the transport can never swap mid-run (and never mid-order). The status page shows both the
+ACTIVE mode (this run) and the STORED mode (next boot) with a restart banner when they
+differ.
 
 **How the switch works (clean, one place):** a small factory (`app/gateways/__init__.py:
 build_gateway(settings)`) reads `COPIER_MODE` and returns exactly one gateway object that
@@ -495,6 +501,7 @@ escalated.
 | Date | Commit | What changed in the code | Sections |
 |---|---|---|---|
 | 2026-08-26 | `0a7235c` | Baseline: documented the current Selenium edition | all (initial) |
+| 2026-08-31 | `d74f6c3`+ | UI mode selector: Web/API buttons on /oauth/tradovate store `copier_mode_override` in the local DB; `resolve_mode` (override>env) applied at BOOT (restart-applied, never mid-run); status.json exposes active vs stored + restart_required; POST /oauth/tradovate/mode validates. Tests: test_mode_select.py (4) + live-boot proof. | 2,13,14 |
 | 2026-08-26 | (uncommitted) | DIRECT-CREDENTIAL auth BUILT (`TRADOVATE_AUTH=credentials`): headless per-VM `/auth/accesstokenrequest` (fields match the tested tradovate_place_order.sh) + `/auth/renewaccesstoken`; mint-at-boot, renew-before-expiry, re-mint fallback, p-captcha/p-ticket guard. Gateway `_current_access_token` branches on auth mode; oauth mode still needs the flow, credentials mode auto-connects. `credentials.py` + config name/password/cid/sec (SecretStr). Verified: my contract/order calls MATCH the tested script (mine handles Stop via stopPrice). `test_credentials.py` (5). 152 green. This is the path for per-VM individual users (own login + cid/sec, no OAuth). | 10 |
 | 2026-08-26 | (uncommitted) | Verified every Tradovate URL vs official docs (partner.tradovate.com mirror): all 8 paths correct. Fixes: cancel_order now sends isAutomated=true; ordStatus 'Completed' treated as fill; status-page method-name bug (.accounts->.account_list). placeorder returns orderId directly (accept test correct); orderType/timeInForce/action enums match. | 10 |
 | 2026-08-26 | (uncommitted) | API-mode ORDER EXECUTION BUILT: `TradovateGateway.execute()` mirrors web automation over REST (market/limit/stop/stop-limit/exit/flatten; bid/ask fail-loud without a price); verify-before-claim via net/order polling; visible rejections; ambiguous-send never retried; latency `[live/verified]` note. `client.py` full REST surface + `AmbiguousSend`. `_action_dict` now carries account_ref (additive). Fake-REST tests (`test_api_execute.py`, 10). Web path unaffected; 147 green. | 10 |

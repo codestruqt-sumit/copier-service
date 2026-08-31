@@ -21,10 +21,34 @@ WEB = "web"
 API = "api"
 MODES = (WEB, API)
 
+MODE_OVERRIDE_KEY = "copier_mode_override"   # set from the dashboard; applied at boot
+
+
+def resolve_mode(settings, session_factory=None) -> str:
+    """Effective mode: the dashboard-stored override (local DB) wins over the env value.
+    Read once at boot - a mode change always takes effect on restart, never mid-run."""
+    env_mode = (getattr(settings, "copier_mode", WEB) or WEB).strip().lower()
+    if session_factory is None:
+        return env_mode
+    try:
+        from app.models import KV
+        db = session_factory()
+        try:
+            row = db.get(KV, MODE_OVERRIDE_KEY)
+            stored = (row.value or "").strip().lower() if row else ""
+        finally:
+            db.close()
+        if stored in MODES and stored != env_mode:
+            log.info("mode override from dashboard: %s (env had %s)", stored, env_mode)
+            return stored
+        return stored if stored in MODES else env_mode
+    except Exception:  # noqa: BLE001 - a DB hiccup must never block boot
+        return env_mode
+
 
 def build_gateway(settings, session_factory=None):
     """Return the gateway for settings.copier_mode. Raises ValueError on an unknown mode."""
-    mode = (getattr(settings, "copier_mode", WEB) or WEB).strip().lower()
+    mode = resolve_mode(settings, session_factory)
     if mode == WEB:
         # Web mode = the shipping Selenium gateway, constructed exactly as before.
         from app.terminal import TerminalGateway
