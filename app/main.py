@@ -22,7 +22,7 @@ from app.executor import TerminalWorker
 from app.poller import Poller
 from app.sender_client import SenderClient
 from app.telegram import notifier as telegram
-from app.gateways import build_gateway, resolve_mode
+from app.gateways import build_gateway
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -86,7 +86,7 @@ def create_app(*, start_poller: bool = True, http_client=None) -> FastAPI:
     app = FastAPI(title=f"Copier · {settings.copier_name}", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
-    app.state.active_mode = resolve_mode(settings, session_factory)
+    app.state.active_mode = (settings.copier_mode or "web").strip().lower()
     app.state.session_factory = session_factory
     app.state.poller = poller
     app.state.worker = worker

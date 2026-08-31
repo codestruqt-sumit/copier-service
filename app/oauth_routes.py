@@ -21,7 +21,6 @@ import secrets
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app.gateways import MODES, MODE_OVERRIDE_KEY, resolve_mode
 from app.gateways.api import oauth, token_store
 from app.gateways.api.client import RestClient, TradovateAPIError
 from app.gateways.api.gateway import TradovateGateway
@@ -102,62 +101,13 @@ def disconnect(request: Request):
     return RedirectResponse(url="/oauth/tradovate?disconnected=1", status_code=303)
 
 
-@router.post("/mode")
-async def set_mode(request: Request):
-    """Store the execution-mode choice (web|api) from the UI. Applied on RESTART - the
-    gateway is built once at boot, so a mode change is always atomic, never mid-order."""
-    settings = _settings(request)
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001
-        body = {}
-    mode = str((body or {}).get("mode", "")).strip().lower()
-    if mode not in MODES and mode != "env":
-        return JSONResponse({"ok": False, "error": f"mode must be one of {list(MODES)} or 'env'"},
-                            status_code=400)
-    from app.models import KV
-    db = _session_factory(request)()
-    try:
-        row = db.get(KV, MODE_OVERRIDE_KEY)
-        if mode == "env":
-            # follow the .env default again: remove the dashboard override entirely
-            if row is not None:
-                db.delete(row)
-        elif row is None:
-            db.add(KV(key=MODE_OVERRIDE_KEY, value=mode))
-        else:
-            row.value = mode
-        db.commit()
-    finally:
-        db.close()
-    if mode == "env":
-        mode = (getattr(settings, "copier_mode", "web") or "web").strip().lower()
-    active = getattr(request.app.state, "active_mode", None) or resolve_mode(settings)
-    log.info("mode selection stored from dashboard: %s (active this run: %s)", mode, active)
-    return JSONResponse({"ok": True, "stored_mode": mode, "active_mode": active,
-                         "restart_required": mode != active})
-
-
 @router.get("/status.json")
 def status_json(request: Request):
     settings = _settings(request)
     sf = _session_factory(request)
-    active = getattr(request.app.state, "active_mode", None)         or resolve_mode(settings, sf)
-    stored = resolve_mode(settings, sf)
-    # where does the stored mode come from? (dashboard override vs .env default)
-    from app.models import KV
-    _db0 = sf()
-    try:
-        _row = _db0.get(KV, MODE_OVERRIDE_KEY)
-        mode_source = "dashboard" if (_row and (_row.value or "").strip().lower() in MODES) else "env"
-    finally:
-        _db0.close()
     out = {
-        "mode": active,
-        "stored_mode": stored,
-        "mode_source": mode_source,
-        "env_mode": (getattr(settings, "copier_mode", "web") or "web").strip().lower(),
-        "restart_required": stored != active,
+        "mode": getattr(request.app.state, "active_mode", None)
+                or (getattr(settings, "copier_mode", "web") or "web").strip().lower(),
         "configured": _configured(settings),
         "redirect_uri": settings.oauth_redirect_uri,
         "base": settings.tradovate_base,
@@ -247,11 +197,7 @@ _PAGE = """<!doctype html>
 
   <div class="card">
     <div class="row"><span class="k">Execution mode</span><span class="v" id="mode">…</span></div>
-    <div class="row"><span class="k">Switch mode</span><span class="v">
-      <button class="btn ghost" style="padding:4px 12px" onclick="setMode('web')">Web</button>
-      <button class="btn ghost" style="padding:4px 12px" onclick="setMode('api')">API</button>
-      <button class="btn ghost" style="padding:4px 12px" onclick="setMode('env')" title="Remove the dashboard choice and follow COPIER_MODE from .env">Use .env</button>
-    </span></div>
+
     <div class="row"><span class="k">Connection</span><span class="v" id="conn">…</span></div>
     <div class="row"><span class="k">Token expires</span><span class="v" id="exp">…</span></div>
     <div class="row"><span class="k">Redirect URI (this VM)</span><span class="v"><code id="redir">…</code></span></div>
@@ -291,20 +237,11 @@ function banner() {
   else if (qs.get('disconnected')) b.innerHTML = '<div class="err">Disconnected. Token cleared.</div>';
   else if (qs.get('err')) b.innerHTML = '<div class="err">'+(ERR[qs.get('err')]||('Error: '+qs.get('err')))+'</div>';
 }
-async function setMode(m){
-  const r = await fetch('/oauth/tradovate/mode', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode:m})});
-  const d = await r.json();
-  const b = document.getElementById('banner');
-  if (d.ok) b.innerHTML = '<div class="err" style="background:rgba(88,166,255,.12);border-color:var(--acc);color:#9ecbff">Mode set to <b>'+d.stored_mode+'</b>. '+(d.restart_required?'RESTART the copier to apply.':'Already active.')+'</div>';
-  else b.innerHTML = '<div class="err">'+(d.error||'could not set mode')+'</div>';
-  refresh();
-}
 function fmt(dt){ if(!dt) return '—'; try { return new Date(dt).toLocaleString(); } catch(e){ return dt; } }
 async function refresh(){
   try {
     const r = await fetch('/oauth/tradovate/status.json'); const s = await r.json();
-    document.getElementById('mode').textContent = s.mode + '  (set by ' + (s.mode_source==='dashboard'?'dashboard':'.env') + ')' + (s.restart_required ? ('  ->  '+s.stored_mode+' after restart') : '');
+    document.getElementById('mode').textContent = s.mode + '  (from COPIER_MODE in .env; restart to change)';
     const c = document.getElementById('conn');
     c.innerHTML = s.connected ? '<span class="pill ok">connected</span>'
                               : '<span class="pill bad">not connected</span> <span class="muted">'+(s.detail||'')+'</span>';
