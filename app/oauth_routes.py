@@ -112,20 +112,26 @@ async def set_mode(request: Request):
     except Exception:  # noqa: BLE001
         body = {}
     mode = str((body or {}).get("mode", "")).strip().lower()
-    if mode not in MODES:
-        return JSONResponse({"ok": False, "error": f"mode must be one of {list(MODES)}"},
+    if mode not in MODES and mode != "env":
+        return JSONResponse({"ok": False, "error": f"mode must be one of {list(MODES)} or 'env'"},
                             status_code=400)
     from app.models import KV
     db = _session_factory(request)()
     try:
         row = db.get(KV, MODE_OVERRIDE_KEY)
-        if row is None:
+        if mode == "env":
+            # follow the .env default again: remove the dashboard override entirely
+            if row is not None:
+                db.delete(row)
+        elif row is None:
             db.add(KV(key=MODE_OVERRIDE_KEY, value=mode))
         else:
             row.value = mode
         db.commit()
     finally:
         db.close()
+    if mode == "env":
+        mode = (getattr(settings, "copier_mode", "web") or "web").strip().lower()
     active = getattr(request.app.state, "active_mode", None) or resolve_mode(settings)
     log.info("mode selection stored from dashboard: %s (active this run: %s)", mode, active)
     return JSONResponse({"ok": True, "stored_mode": mode, "active_mode": active,
@@ -138,9 +144,19 @@ def status_json(request: Request):
     sf = _session_factory(request)
     active = getattr(request.app.state, "active_mode", None)         or resolve_mode(settings, sf)
     stored = resolve_mode(settings, sf)
+    # where does the stored mode come from? (dashboard override vs .env default)
+    from app.models import KV
+    _db0 = sf()
+    try:
+        _row = _db0.get(KV, MODE_OVERRIDE_KEY)
+        mode_source = "dashboard" if (_row and (_row.value or "").strip().lower() in MODES) else "env"
+    finally:
+        _db0.close()
     out = {
         "mode": active,
         "stored_mode": stored,
+        "mode_source": mode_source,
+        "env_mode": (getattr(settings, "copier_mode", "web") or "web").strip().lower(),
         "restart_required": stored != active,
         "configured": _configured(settings),
         "redirect_uri": settings.oauth_redirect_uri,
@@ -234,6 +250,7 @@ _PAGE = """<!doctype html>
     <div class="row"><span class="k">Switch mode</span><span class="v">
       <button class="btn ghost" style="padding:4px 12px" onclick="setMode('web')">Web</button>
       <button class="btn ghost" style="padding:4px 12px" onclick="setMode('api')">API</button>
+      <button class="btn ghost" style="padding:4px 12px" onclick="setMode('env')" title="Remove the dashboard choice and follow COPIER_MODE from .env">Use .env</button>
     </span></div>
     <div class="row"><span class="k">Connection</span><span class="v" id="conn">…</span></div>
     <div class="row"><span class="k">Token expires</span><span class="v" id="exp">…</span></div>
@@ -287,7 +304,7 @@ function fmt(dt){ if(!dt) return '—'; try { return new Date(dt).toLocaleString
 async function refresh(){
   try {
     const r = await fetch('/oauth/tradovate/status.json'); const s = await r.json();
-    document.getElementById('mode').textContent = s.mode + (s.restart_required ? ('  ->  '+s.stored_mode+' after restart') : '');
+    document.getElementById('mode').textContent = s.mode + '  (set by ' + (s.mode_source==='dashboard'?'dashboard':'.env') + ')' + (s.restart_required ? ('  ->  '+s.stored_mode+' after restart') : '');
     const c = document.getElementById('conn');
     c.innerHTML = s.connected ? '<span class="pill ok">connected</span>'
                               : '<span class="pill bad">not connected</span> <span class="muted">'+(s.detail||'')+'</span>';
